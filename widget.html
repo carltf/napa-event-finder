@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Napa Valley Event Finder</title>
+  <style>
+    :root { --border:#e5e7eb; --text:#111827; --muted:#6b7280; --bg:#ffffff; --chip:#f3f4f6; }
+    body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; color:var(--text); background:var(--bg);}
+    .wrap{max-width:980px; margin:0 auto; padding:18px;}
+    h1{font-size:22px; margin:0 0 12px 0;}
+    .card{border:1px solid var(--border); border-radius:14px; padding:14px; box-shadow:0 1px 2px rgba(0,0,0,.03);}
+    .grid{display:grid; grid-template-columns:1fr; gap:10px;}
+    @media(min-width:820px){ .grid{ grid-template-columns: repeat(4, 1fr);} }
+    label{display:block; font-size:12px; color:var(--muted); margin:0 0 6px 0;}
+    select,input{width:100%; padding:10px 10px; border:1px solid var(--border); border-radius:10px; font-size:14px; background:#fff;}
+    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;}
+    button{padding:10px 12px; border-radius:12px; border:1px solid var(--border); background:#111827; color:#fff; cursor:pointer; font-weight:600;}
+    button.secondary{background:#fff; color:#111827;}
+    .hint{font-size:12px; color:var(--muted); margin-top:8px;}
+    .results{margin-top:14px; display:flex; flex-direction:column; gap:10px;}
+    .event h3{margin:0 0 6px 0; font-size:16px;}
+    .event p{margin:0; line-height:1.35;}
+    .chips{display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;}
+    .chip{background:var(--chip); border:1px solid var(--border); border-radius:999px; padding:6px 10px; font-size:12px; color:#374151;}
+    .footer{margin-top:12px; font-size:12px; color:var(--muted);}
+    .error{color:#b91c1c; font-size:13px; margin-top:10px;}
+    textarea{width:100%; min-height:120px; border:1px solid var(--border); border-radius:12px; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Napa Valley Event Finder</h1>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          <label for="town">Town</label>
+          <select id="town">
+            <option value="all">All Napa County</option>
+            <option value="napa">Napa</option>
+            <option value="yountville">Yountville</option>
+            <option value="st-helena">St. Helena</option>
+            <option value="calistoga">Calistoga</option>
+            <option value="american-canyon">American Canyon</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="type">Type</label>
+          <select id="type">
+            <option value="any">Any event</option>
+            <option value="music">Music</option>
+            <option value="food-wine">Food &amp; wine</option>
+            <option value="family">Family</option>
+            <option value="art">Art</option>
+            <option value="movies">Movies (Cameo Cinema)</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="start">Start date</label>
+          <input id="start" type="date"/>
+        </div>
+
+        <div>
+          <label for="end">End date</label>
+          <input id="end" type="date"/>
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="search">Search</button>
+        <button id="copy" class="secondary" disabled>Copy results</button>
+        <span class="hint">Returns up to 5 results in Weekender-style formatting.</span>
+      </div>
+
+      <div class="chips" id="sources"></div>
+
+      <div id="err" class="error" style="display:none;"></div>
+
+      <div class="results" id="results"></div>
+
+      <div id="copyBlock" style="display:none; margin-top:12px;">
+        <label for="copyText">Copy/paste text</label>
+        <textarea id="copyText" readonly></textarea>
+      </div>
+
+      <div class="footer">
+        Note: Results are pulled from a curated set of local calendars and venues. Always confirm details on the original event website.
+      </div>
+    </div>
+  </div>
+
+<script>
+  const API_BASE = window.NVF_API_BASE || "";
+  const $ = (id)=>document.getElementById(id);
+
+  async function loadSources() {
+    try {
+      const r = await fetch(API_BASE + "/sources.json");
+      const sources = await r.json();
+      const el = $("sources");
+      el.innerHTML = "";
+      sources.forEach(s => {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = s.name;
+        el.appendChild(chip);
+      });
+    } catch (e) {}
+  }
+
+  function render(results) {
+    const wrap = $("results");
+    wrap.innerHTML = "";
+    const copyLines = [];
+
+    results.forEach(item => {
+      const div = document.createElement("div");
+      div.className = "card event";
+      div.innerHTML = `
+        <h3>${escapeHtml(item.header)}</h3>
+        <p>${escapeHtml(item.body)}</p>
+      `;
+      wrap.appendChild(div);
+      copyLines.push(item.header);
+      copyLines.push(item.body);
+      copyLines.push("");
+    });
+
+    $("copy").disabled = results.length === 0;
+    $("copyBlock").style.display = results.length ? "block" : "none";
+    $("copyText").value = copyLines.join("\\n").trim();
+  }
+
+  function escapeHtml(s){
+    return String(s||"").replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  }
+
+  async function search() {
+    $("err").style.display = "none";
+    $("err").textContent = "";
+
+    const town = $("town").value;
+    const type = $("type").value;
+    const start = $("start").value;
+    const end = $("end").value;
+
+    const qs = new URLSearchParams({ town, type, start, end, limit: "5" }).toString();
+    const url = API_BASE + "/api/search?" + qs;
+
+    $("search").textContent = "Searching…";
+    $("search").disabled = true;
+
+    try {
+      const r = await fetch(url);
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.error || "Search failed");
+      render(data.results || []);
+      if ((data.results || []).length === 0) {
+        $("err").style.display = "block";
+        $("err").textContent = "No matches found for that filter. Try expanding the date range or choosing All Napa County.";
+      }
+    } catch (e) {
+      $("err").style.display = "block";
+      $("err").textContent = "Could not load results. " + (e.message || e);
+    } finally {
+      $("search").textContent = "Search";
+      $("search").disabled = false;
+    }
+  }
+
+  $("search").addEventListener("click", search);
+  $("copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("copyText").value);
+      $("copy").textContent = "Copied";
+      setTimeout(()=> $("copy").textContent = "Copy results", 1200);
+    } catch(e) {}
+  });
+
+  loadSources();
+</script>
+</body>
+</html>

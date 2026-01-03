@@ -1,0 +1,96 @@
+[
+  {
+    "id": "donapa",
+    "name": "Do Napa",
+    "type": "calendar",
+    "town": "Multiple",
+    "tags": [
+      "any",
+      "music",
+      "food-wine",
+      "family",
+      "art"
+    ],
+    "listUrl": "https://donapa.com/upcoming-events/"
+  },
+  {
+    "id": "napa_library",
+    "name": "Napa County Library Events",
+    "type": "calendar",
+    "town": "Multiple",
+    "tags": [
+      "any",
+      "family",
+      "art",
+      "education"
+    ],
+    "listUrl": "https://events.napalibrary.org/events?n=60&r=days"
+  },
+  {
+    "id": "amcan_chamber",
+    "name": "American Canyon Chamber Events",
+    "type": "calendar",
+    "town": "American Canyon",
+    "tags": [
+      "any",
+      "community",
+      "business",
+      "family"
+    ],
+    "listUrl": "https://business.amcanchamber.org/events"
+  },
+  {
+    "id": "calistoga_chamber",
+    "name": "Calistoga Chamber Events",
+    "type": "calendar",
+    "town": "Calistoga",
+    "tags": [
+      "any",
+      "community",
+      "business",
+      "family"
+    ],
+    "listUrl": "https://chamber.calistogachamber.net/events"
+  },
+  {
+    "id": "yountville_chamber",
+    "name": "Yountville Chamber Events",
+    "type": "calendar",
+    "town": "Yountville",
+    "tags": [
+      "any",
+      "community",
+      "business",
+      "family"
+    ],
+    "listUrl": "https://web.yountvillechamber.com/events"
+  },
+  {
+    "id": "visit_napa_valley",
+    "name": "Visit Napa Valley Events",
+    "type": "calendar",
+    "town": "Multiple",
+    "tags": [
+      "any",
+      "music",
+      "food-wine",
+      "family",
+      "art"
+    ],
+    "listUrl": "https://www.visitnapavalley.com/events/"
+  },
+  {
+    "id": "cameo",
+    "name": "Cameo Cinema",
+    "type": "movies",
+    "town": "St. Helena",
+    "tags": [
+      "movies"
+    ],
+    "listUrl": "https://www.cameocinema.com/",
+    "altUrls": [
+      "https://www.cameocinema.com/movie-calendar",
+      "https://www.cameocinema.com/coming-soon"
+    ]
+  }
+]

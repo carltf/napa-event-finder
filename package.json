@@ -1,0 +1,10 @@
+{
+  "name": "napa-event-finder",
+  "private": true,
+  "type": "module",
+  "version": "0.2.0",
+  "description": "Embed-friendly Napa Valley event finder for Squarespace (Weekender-style output).",
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12"
+  }
+}

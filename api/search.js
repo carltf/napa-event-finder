@@ -1,6 +1,14 @@
-import * as cheerio from "cheerio";
+import cheerio from "cheerio";
 
-// Simple 10-minute in-memory cache (per serverless instance)
+/**
+ * Napa Valley Event Finder — API
+ * - Inlines sources (no fs bundling issues)
+ * - Tightens link rules (especially DoNapa)
+ * - Optionally fetches event detail pages and extracts JSON-LD Event data
+ * - Accepts YYYY-MM-DD and MM/DD/YYYY dates
+ */
+
+// -------------------- Cache --------------------
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const cache = globalThis.__NVF_CACHE__ || (globalThis.__NVF_CACHE__ = new Map());
 
@@ -15,6 +23,35 @@ function getCached(key) {
 }
 function setCached(key, value) {
   cache.set(key, { t: Date.now(), v: value });
+}
+
+// -------------------- Sources (inline) --------------------
+const SOURCES = [
+  { id: "donapa", name: "Do Napa", type: "calendar", listUrl: "https://donapa.com/upcoming-events/" },
+  { id: "napa_library", name: "Napa County Library Events", type: "calendar", listUrl: "https://events.napalibrary.org/events?n=60&r=days" },
+  { id: "amcan_chamber", name: "American Canyon Chamber Events", type: "calendar", listUrl: "https://business.amcanchamber.org/events" },
+  { id: "calistoga_chamber", name: "Calistoga Chamber Events", type: "calendar", listUrl: "https://chamber.calistogachamber.net/events" },
+  { id: "yountville_chamber", name: "Yountville Chamber Events", type: "calendar", listUrl: "https://web.yountvillechamber.com/events" },
+  { id: "visit_napa_valley", name: "Visit Napa Valley Events", type: "calendar", listUrl: "https://www.visitnapavalley.com/events/" },
+  {
+    id: "cameo",
+    name: "Cameo Cinema",
+    type: "movies",
+    listUrl: "https://www.cameocinema.com/",
+    altUrls: ["https://www.cameocinema.com/movie-calendar", "https://www.cameocinema.com/coming-soon"],
+  },
+];
+
+// -------------------- Helpers --------------------
+function sendJson(res, statusCode, payload) {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.end(JSON.stringify(payload, null, 2));
+}
+
+function cleanText(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
 }
 
 function toISODate(d) {
@@ -63,164 +100,10 @@ async function fetchText(url) {
   const cached = getCached(key);
   if (cached) return cached;
 
-  function cleanText(s) {
-  return String(s || "").replace(/\s+/g, " ").trim();
-}
-
-function isGenericTitle(t) {
-  const x = cleanText(t).toLowerCase();
-  return (
-    !x ||
-    x === "read more" ||
-    x === "event details" ||
-    x === "learn more" ||
-    x === "details" ||
-    x === "view event"
-  );
-}
-
-function getJsonLdEvents($) {
-  const out = [];
-  $("script[type='application/ld+json']").each((_, el) => {
-    const raw = $(el).text();
-    if (!raw) return;
-    try {
-      const data = JSON.parse(raw);
-      const arr = Array.isArray(data) ? data : [data];
-      for (const item of arr) {
-        if (!item) continue;
-        if (item["@type"] === "Event") out.push(item);
-        if (item["@graph"] && Array.isArray(item["@graph"])) {
-          for (const g of item["@graph"]) {
-            if (g && g["@type"] === "Event") out.push(g);
-          }
-        }
-      }
-    } catch (_) {}
-  });
-  return out;
-}
-
-function apTimeFromISO(iso) {
-  // iso can include time: 2026-01-03T19:00:00-08:00
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
-    let hrs = d.getHours();
-    const mins = d.getMinutes();
-    const ampm = hrs >= 12 ? "p.m." : "a.m.";
-    hrs = hrs % 12;
-    if (hrs === 0) hrs = 12;
-    return mins ? `${hrs}:${String(mins).padStart(2, "0")} ${ampm}` : `${hrs} ${ampm}`;
-  } catch {
-    return null;
-  }
-}
-
-function apDateFromISO(iso) {
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
-    const weekdays = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-    const months = ["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
-    return `${weekdays[d.getDay()]}, ${months[d.getMonth()]} ${d.getDate()}`;
-  } catch {
-    return null;
-  }
-}
-
-function extractAddress(loc) {
-  // loc can be object or string depending on schema
-  const addr = loc?.address;
-  if (!addr) return null;
-
-  // addr can be object or string
-  if (typeof addr === "string") return cleanText(addr);
-
-  const parts = [
-    addr.streetAddress,
-    addr.addressLocality,
-  ].filter(Boolean);
-
-  // Weekender rule: street address only is ideal, but locality helps if all we have
-  // We'll return "streetAddress." if present; otherwise locality string.
-  if (addr.streetAddress) return `${cleanText(addr.streetAddress)}.`;
-  if (parts.length) return `${cleanText(parts.join(", "))}.`;
-
-  return null;
-}
-
-async function extractEventFromPage(url, fallbackTown) {
-  const html = await fetchText(url);
-  const $ = cheerio.load(html);
-
-  // 1) JSON-LD Event (best)
-  const ldEvents = getJsonLdEvents($);
-  const ev = ldEvents[0];
-
-  let title = null;
-  let startISO = null;
-  let endISO = null;
-  let venueName = null;
-  let address = null;
-  let price = null;
-  let details = null;
-
-  if (ev) {
-    title = ev.name || null;
-    startISO = ev.startDate || null;
-    endISO = ev.endDate || null;
-
-    if (ev.location) {
-      const loc = Array.isArray(ev.location) ? ev.location[0] : ev.location;
-      venueName = loc?.name || null;
-      address = extractAddress(loc) || null;
-    }
-
-    if (ev.offers) {
-      const offer = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
-      if (offer?.price) price = `Tickets ${offer.price}${offer.priceCurrency ? " " + offer.priceCurrency : ""}.`;
-    }
-
-    if (ev.description) details = cleanText(ev.description);
-  }
-
-  // 2) OG / H1 fallback
-  if (!title) {
-    const ogt = $("meta[property='og:title']").attr("content");
-    title = cleanText(ogt) || cleanText($("h1").first().text()) || cleanText($("title").text()) || null;
-  }
-
-  // Build “when”
-  const dateISO = startISO ? toISODate(new Date(startISO)) : null;
-  let when = null;
-  if (startISO) {
-    const apDate = apDateFromISO(startISO);
-    const apTime = apTimeFromISO(startISO);
-    when = apDate ? (apTime ? `${apDate}, ${apTime}` : apDate) : null;
-  }
-
-  // Details sentence (keep it short, rely on website)
-  const venueBit = venueName ? ` at ${cleanText(venueName)}.` : "";
-  const detailsShort = details ? `${details}${details.endsWith(".") ? "" : "."}` : `Details on website.${venueBit}`;
-
-  return {
-    title: title || "Event",
-    url,
-    dateISO,
-    when: when || "Date and time on website.",
-    details: detailsShort,
-    price: price || "Price not provided.",
-    contact: `For more information visit their website (${url}).`,
-    address: address || "Venue address not provided.",
-    town: fallbackTown || "all",
-    tag: "any",
-  };
-}
-
   const res = await fetch(url, {
     headers: {
       "User-Agent": "NapaValleyFeaturesEventFinder/1.0 (+https://napavalleyfeatures.com)",
+      "Accept-Language": "en-US,en;q=0.9",
     },
   });
 
@@ -229,17 +112,6 @@ async function extractEventFromPage(url, fallbackTown) {
   const txt = await res.text();
   setCached(key, txt);
   return txt;
-}
-
-function apDateTime(dateISO, timeStr) {
-  if (!dateISO) return null;
-  const dt = new Date(dateISO + "T00:00:00Z");
-  const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const months = ["Jan.", "Feb.", "March", "April", "May", "June", "July", "Aug.", "Sept.", "Oct.", "Nov.", "Dec."];
-  const wd = weekdays[dt.getUTCDay()];
-  const mo = months[dt.getUTCMonth()];
-  const day = dt.getUTCDate();
-  return timeStr ? `${wd}, ${mo} ${day}, ${timeStr}` : `${wd}, ${mo} ${day}`;
 }
 
 function titleCase(s) {
@@ -254,6 +126,72 @@ function titleCase(s) {
       return clean.charAt(0).toUpperCase() + clean.slice(1);
     })
     .join(" ");
+}
+
+function isGenericTitle(t) {
+  const x = cleanText(t).toLowerCase();
+  return (
+    !x ||
+    x === "read more" ||
+    x === "event details" ||
+    x === "learn more" ||
+    x === "details" ||
+    x === "view event"
+  );
+}
+
+function apDateFromYMD(ymd) {
+  // ymd = YYYY-MM-DD
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
+  if (!m) return null;
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (isNaN(dt.getTime())) return null;
+
+  const weekdays = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const months = ["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
+
+  return `${weekdays[dt.getUTCDay()]}, ${months[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
+}
+
+function apTimeFromISOClock(iso) {
+  // Parse time without timezone conversion (use clock digits in the ISO string)
+  const m = /T(\d{2}):(\d{2})/.exec(iso || "");
+  if (!m) return null;
+
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+
+  const ampm = hh >= 12 ? "p.m." : "a.m.";
+  hh = hh % 12;
+  if (hh === 0) hh = 12;
+
+  if (mm === 0) return `${hh} ${ampm}`;
+  return `${hh}:${String(mm).padStart(2, "0")} ${ampm}`;
+}
+
+function formatTimeRange(startISO, endISO) {
+  const t1 = apTimeFromISOClock(startISO);
+  const t2 = apTimeFromISOClock(endISO);
+
+  if (!t1 && !t2) return null;
+  if (t1 && !t2) return t1;
+  if (!t1 && t2) return t2;
+
+  // If both have same meridiem, drop the first meridiem (AP style)
+  const mer1 = t1.endsWith("a.m.") ? "a.m." : "p.m.";
+  const mer2 = t2.endsWith("a.m.") ? "a.m." : "p.m.";
+
+  const t1NoMer = t1.replace(/\s(a\.m\.|p\.m\.)$/, "");
+  if (mer1 === mer2) {
+    return `${t1NoMer} to ${t2}`;
+  }
+  return `${t1} to ${t2}`;
+}
+
+function truncate(s, max = 260) {
+  const x = cleanText(s);
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1).trimEnd() + "…";
 }
 
 function formatWeekender(event) {
@@ -295,228 +233,288 @@ function filterAndRank(events, filters) {
   return out.map(formatWeekender);
 }
 
-// Master source list is inlined (avoids fs bundling issues on Vercel)
-const SOURCES = [
-  {
-    id: "donapa",
-    name: "Do Napa",
-    type: "calendar",
-    listUrl: "https://donapa.com/upcoming-events/",
-  },
-  {
-    id: "napa_library",
-    name: "Napa County Library Events",
-    type: "calendar",
-    listUrl: "https://events.napalibrary.org/events?n=60&r=days",
-  },
-  {
-    id: "amcan_chamber",
-    name: "American Canyon Chamber Events",
-    type: "calendar",
-    listUrl: "https://business.amcanchamber.org/events",
-  },
-  {
-    id: "calistoga_chamber",
-    name: "Calistoga Chamber Events",
-    type: "calendar",
-    listUrl: "https://chamber.calistogachamber.net/events",
-  },
-  {
-    id: "yountville_chamber",
-    name: "Yountville Chamber Events",
-    type: "calendar",
-    listUrl: "https://web.yountvillechamber.com/events",
-  },
-  {
-    id: "visit_napa_valley",
-    name: "Visit Napa Valley Events",
-    type: "calendar",
-    listUrl: "https://www.visitnapavalley.com/events/",
-  },
-  {
-    id: "cameo",
-    name: "Cameo Cinema",
-    type: "movies",
-    listUrl: "https://www.cameocinema.com/",
-    altUrls: ["https://www.cameocinema.com/movie-calendar", "https://www.cameocinema.com/coming-soon"],
-  },
-];
+// -------------------- JSON-LD extraction --------------------
+function getJsonLdEvents($) {
+  const out = [];
+  $("script[type='application/ld+json']").each((_, el) => {
+    const raw = $(el).text();
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      const stack = Array.isArray(data) ? data : [data];
 
-// --- Parsers (best-effort) ---
+      for (const item of stack) {
+        if (!item) continue;
 
+        if (item["@type"] === "Event") out.push(item);
+
+        if (Array.isArray(item["@graph"])) {
+          for (const g of item["@graph"]) {
+            if (g && g["@type"] === "Event") out.push(g);
+          }
+        }
+      }
+    } catch (_) {}
+  });
+  return out;
+}
+
+function extractStreetAddress(addr) {
+  if (!addr) return null;
+
+  if (typeof addr === "string") {
+    // Not ideal (often includes city/state); keep conservative
+    return null;
+  }
+
+  const street = cleanText(addr.streetAddress);
+  if (street) return `${street}.`;
+
+  return null;
+}
+
+async function extractEventFromPage(url, opts = {}) {
+  const html = await fetchText(url);
+  const $ = cheerio.load(html);
+
+  let title = null;
+  let startISO = null;
+  let endISO = null;
+  let address = null;
+  let description = null;
+  let price = null;
+
+  const ldEvents = getJsonLdEvents($);
+  const ev = ldEvents[0];
+
+  if (ev) {
+    title = ev.name || null;
+    startISO = ev.startDate || null;
+    endISO = ev.endDate || null;
+    description = ev.description || null;
+
+    // location/address
+    const loc = Array.isArray(ev.location) ? ev.location[0] : ev.location;
+    if (loc && loc.address) {
+      address = extractStreetAddress(loc.address);
+    }
+
+    // offers/price
+    const offers = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
+    if (offers && offers.price) {
+      // Keep simple, don't invent currency formatting
+      price = `Tickets ${offers.price}.`;
+    }
+  }
+
+  // OG/H1 fallback for title
+  if (!title) {
+    const ogt = $("meta[property='og:title']").attr("content");
+    title = cleanText(ogt) || cleanText($("h1").first().text()) || cleanText($("title").text()) || null;
+  }
+
+  // Build when + dateISO (use ISO date part; no timezone conversion)
+  let dateISO = null;
+  let when = null;
+
+  const ymdMatch = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "");
+  if (ymdMatch) {
+    dateISO = ymdMatch[1];
+    const apDate = apDateFromYMD(dateISO);
+    const timeStr = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
+    when = apDate ? (timeStr ? `${apDate}, ${timeStr}` : apDate) : null;
+  }
+
+  // Details: keep short and safe
+  let details = "Details on website.";
+  if (description) details = truncate(description);
+  if (details && !details.endsWith(".")) details += ".";
+
+  return {
+    title: title || "Event",
+    url,
+    dateISO,
+    when: when || "Date and time on website.",
+    details,
+    price: price || "Price not provided.",
+    contact: `For more information visit their website (${url}).`,
+    address: address || "Venue address not provided.",
+    town: opts.town || "all",
+    tag: opts.tag || "any",
+  };
+}
+
+async function extractOrFallback(url, fallbackTitle, opts = {}) {
+  try {
+    const ev = await extractEventFromPage(url, opts);
+    if (isGenericTitle(ev.title) && fallbackTitle) ev.title = fallbackTitle;
+    if (isGenericTitle(ev.title)) return null;
+    return ev;
+  } catch (_) {
+    const t = fallbackTitle && !isGenericTitle(fallbackTitle) ? fallbackTitle : null;
+    if (!t) return null;
+    return {
+      title: t,
+      url,
+      dateISO: null,
+      when: "Date and time on website.",
+      details: "Details on website.",
+      price: "Price not provided.",
+      contact: `For more information visit their website (${url}).`,
+      address: "Venue address not provided.",
+      town: opts.town || "all",
+      tag: opts.tag || "any",
+    };
+  }
+}
+
+// -------------------- Parsers --------------------
+
+// DoNapa: ONLY donapa.com/event/... and then fetch detail pages
 async function parseDoNapa(listUrl, filters) {
   const html = await fetchText(listUrl);
   const $ = cheerio.load(html);
-  const events = [];
 
-  $("a").each((_, a) => {
+  const found = [];
+  $("a[href]").each((_, a) => {
     const href = $(a).attr("href") || "";
-    const text = $(a).text().trim();
-    if (!text || text.length < 4) return;
-    if (!href.includes("/event") && !href.includes("/events")) return;
+    if (!href) return;
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
-    const parentText = $(a).parent().text().replace(/\s+/g, " ").trim();
-    const dateMatch = parentText.match(
-      /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i
-    );
+    let u;
+    try { u = new URL(fullUrl); } catch { return; }
 
-    let dateISO = null;
-    let when = null;
-    if (dateMatch) {
-      const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
-      const m = monthMap[dateMatch[1].toLowerCase()];
-      const d = parseInt(dateMatch[2], 10);
-      const y = new Date().getUTCFullYear();
-      dateISO = toISODate(new Date(Date.UTC(y, m, d)));
-      when = apDateTime(dateISO, null);
-    }
+    if (!u.hostname.endsWith("donapa.com")) return;
+    if (!u.pathname.startsWith("/event/")) return;
 
-    events.push({
-      source: "Do Napa",
-      town: "napa",
-      tag: "any",
-      title: text,
-      url: fullUrl,
-      dateISO,
-      when,
-      details: "Details on website.",
-      price: "Price not provided.",
-      contact: `For more information visit their website (${fullUrl}).`,
-      address: "Venue address not provided.",
-    });
+    found.push(u.toString());
   });
 
-  const seen = new Set();
-  const deduped = [];
-  for (const e of events) {
-    if (!e.url || seen.has(e.url)) continue;
-    seen.add(e.url);
-    deduped.push(e);
+  const unique = Array.from(new Set(found)).slice(0, 12);
+
+  const events = [];
+  for (const url of unique) {
+    const ev = await extractOrFallback(url, null, { town: "napa", tag: "any" });
+    if (ev) events.push(ev);
   }
-  return filterAndRank(deduped, filters);
+
+  return filterAndRank(events, filters);
 }
 
+// GrowthZone chambers: /events/details/... then extract details (best-effort)
 async function parseGrowthZone(listUrl, sourceName, townSlug, filters) {
   const html = await fetchText(listUrl);
   const $ = cheerio.load(html);
-  const events = [];
 
+  const links = [];
   $("a[href*='/events/details/']").each((_, a) => {
-    const href = $(a).attr("href");
-    const title = $(a).text().replace(/\s+/g, " ").trim();
-    if (!title) return;
+    const href = $(a).attr("href") || "";
+    const title = cleanText($(a).text());
+    if (!href) return;
+
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
-
-    const cardText = $(a).closest("li,div,article,section").text().replace(/\s+/g, " ").trim();
-    const dm = cardText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
-
-    let dateISO = null;
-    let when = null;
-    if (dm) {
-      const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
-      const m = monthMap[dm[1].toLowerCase()];
-      const d = parseInt(dm[2], 10);
-      const y = new Date().getUTCFullYear();
-      dateISO = toISODate(new Date(Date.UTC(y, m, d)));
-      when = apDateTime(dateISO, null);
-    }
-
-    events.push({
-      source: sourceName,
-      town: townSlug,
-      tag: "any",
-      title,
-      url: fullUrl,
-      dateISO,
-      when,
-      details: "Details on website.",
-      price: "Price not provided.",
-      contact: `For more information visit their website (${fullUrl}).`,
-      address: "Venue address not provided.",
-    });
+    links.push({ url: fullUrl, title });
   });
 
   const seen = new Set();
-  const deduped = [];
-  for (const e of events) {
-    if (!e.url || seen.has(e.url)) continue;
-    seen.add(e.url);
-    deduped.push(e);
+  const unique = [];
+  for (const x of links) {
+    if (!x.url || seen.has(x.url)) continue;
+    seen.add(x.url);
+    unique.push(x);
+    if (unique.length >= 12) break;
   }
-  return filterAndRank(deduped, filters);
+
+  const events = [];
+  for (const x of unique) {
+    const ev = await extractOrFallback(x.url, x.title, { town: townSlug, tag: "any" });
+    if (ev) events.push(ev);
+  }
+
+  return filterAndRank(events, filters);
 }
 
+// Napa Library: follow /event/... pages and extract
 async function parseNapaLibrary(listUrl, filters) {
   const html = await fetchText(listUrl);
   const $ = cheerio.load(html);
-  const events = [];
 
-  $("a[href*='/event/'], a[href*='/events/']").each((_, a) => {
+  const links = [];
+  $("a[href]").each((_, a) => {
     const href = $(a).attr("href") || "";
-    const title = $(a).text().replace(/\s+/g, " ").trim();
-    if (!title || title.length < 4) return;
-    if (href.includes("/events?") || href.endsWith("/events")) return;
+    if (!href) return;
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
-    const cardText = $(a).closest("article,li,div").text().replace(/\s+/g, " ").trim();
-    const dm = cardText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})(?:,\s*(\d{4}))?/i);
+    let u;
+    try { u = new URL(fullUrl); } catch { return; }
 
-    let dateISO = null;
-    let when = null;
+    if (!u.hostname.includes("napalibrary.org")) return;
+    // Keep event-ish links, avoid search/index pages
+    if (!u.pathname.includes("/event")) return;
 
-    if (dm) {
-      const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
-      const m = monthMap[dm[1].toLowerCase()];
-      const d = parseInt(dm[2], 10);
-      const y = dm[3] ? parseInt(dm[3], 10) : new Date().getUTCFullYear();
-      dateISO = toISODate(new Date(Date.UTC(y, m, d)));
-
-      const tm = cardText.match(/\b(\d{1,2})(?::(\d{2}))?\s*(a\.m\.|p\.m\.|AM|PM)\b/i);
-      let timeStr = null;
-      if (tm) {
-        const hour = parseInt(tm[1], 10);
-        const mins = tm[2] || "00";
-        const ampm = tm[3].toLowerCase().includes("p") ? "p.m." : "a.m.";
-        timeStr = `${hour}:${mins} ${ampm}`.replace(":00 ", " ");
-      }
-      when = apDateTime(dateISO, timeStr);
-    }
-
-    let town = "all";
-    const lc = cardText.toLowerCase();
-    if (lc.includes("st. helena")) town = "st-helena";
-    else if (lc.includes("yountville")) town = "yountville";
-    else if (lc.includes("calistoga")) town = "calistoga";
-    else if (lc.includes("american canyon")) town = "american-canyon";
-    else if (lc.includes("napa")) town = "napa";
-
-    events.push({
-      source: "Napa County Library",
-      town,
-      tag: "any",
-      title,
-      url: fullUrl,
-      dateISO,
-      when,
-      details: "Library program. Details on website.",
-      price: "Price not provided.",
-      contact: `For more information visit their website (${fullUrl}).`,
-      address: "Venue address not provided.",
-    });
+    const t = cleanText($(a).text());
+    links.push({ url: u.toString(), title: t });
   });
 
   const seen = new Set();
-  const deduped = [];
-  for (const e of events) {
-    const key = (e.url || "") + "|" + (e.title || "");
-    if (seen.has(key)) continue;
+  const unique = [];
+  for (const x of links) {
+    const key = x.url;
+    if (!key || seen.has(key)) continue;
     seen.add(key);
-    deduped.push(e);
+    unique.push(x);
+    if (unique.length >= 12) break;
   }
-  return filterAndRank(deduped, filters);
+
+  const events = [];
+  for (const x of unique) {
+    const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
+    if (ev) events.push(ev);
+  }
+
+  return filterAndRank(events, filters);
 }
 
+// Visit Napa Valley: follow /event/... pages and extract
+async function parseVisitNapaValley(listUrl, filters) {
+  const html = await fetchText(listUrl);
+  const $ = cheerio.load(html);
+
+  const found = [];
+  $("a[href]").each((_, a) => {
+    const href = $(a).attr("href") || "";
+    if (!href) return;
+
+    const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
+    let u;
+    try { u = new URL(fullUrl); } catch { return; }
+
+    if (!u.hostname.endsWith("visitnapavalley.com")) return;
+    if (!u.pathname.startsWith("/event/")) return;
+
+    const t = cleanText($(a).text());
+    found.push({ url: u.toString(), title: t });
+  });
+
+  const seen = new Set();
+  const unique = [];
+  for (const x of found) {
+    if (!x.url || seen.has(x.url)) continue;
+    seen.add(x.url);
+    unique.push(x);
+    if (unique.length >= 12) break;
+  }
+
+  const events = [];
+  for (const x of unique) {
+    const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
+    if (ev) events.push(ev);
+  }
+
+  return filterAndRank(events, filters);
+}
+
+// Cameo: keep simple listing, stable contact + address
 async function parseCameo(listUrl, altUrls, filters) {
   const html = await fetchText(listUrl);
   const $ = cheerio.load(html);
@@ -524,7 +522,7 @@ async function parseCameo(listUrl, altUrls, filters) {
 
   const titles = [];
   $("h2, h3").each((_, el) => {
-    const t = $(el).text().replace(/\s+/g, " ").trim();
+    const t = cleanText($(el).text());
     if (t && t.length > 2 && t.length < 80 && !t.toLowerCase().includes("menu")) titles.push(t);
   });
 
@@ -536,44 +534,50 @@ async function parseCameo(listUrl, altUrls, filters) {
     email: "info@cameocinema.com",
   };
 
-  for (const t of titles.slice(0, 10)) {
-    if (t.toLowerCase().includes("cameo") || t.toLowerCase().includes("movie times")) continue;
+  for (const t of titles.slice(0, 8)) {
+    if (isGenericTitle(t)) continue;
+    if (t.toLowerCase().includes("cameo")) continue;
+    if (t.toLowerCase().includes("movie times")) continue;
+
     events.push({
-      source: "Cameo Cinema",
-      town: "st-helena",
-      tag: "movies",
       title: t,
       url: listUrl,
       dateISO: todayISO,
-      when: apDateTime(todayISO, null),
+      when: apDateFromYMD(todayISO) || "Date and time on website.",
       details: "Now playing. Showtimes on website.",
       price: "Price not provided.",
       contact: `For more information call ${cameoMeta.phone}, email ${cameoMeta.email} or visit their website (${listUrl}).`,
       address: cameoMeta.address,
+      town: "st-helena",
+      tag: "movies",
     });
   }
 
+  // Coming soon (optional)
   if (altUrls && altUrls.length) {
     try {
-      const coming = await fetchText(altUrls[1] || altUrls[0]);
+      const comingUrl = altUrls[1] || altUrls[0];
+      const coming = await fetchText(comingUrl);
       const $$ = cheerio.load(coming);
+
       $$("h2, h3, h4").each((_, el) => {
-        const t = $$(el).text().replace(/\s+/g, " ").trim();
+        const t = cleanText($$(el).text());
         if (!t || t.length < 2) return;
-        if (t.toLowerCase().includes("coming soon") || t.toLowerCase().includes("see all")) return;
+        if (t.toLowerCase().includes("coming soon")) return;
+        if (t.toLowerCase().includes("see all")) return;
+        if (isGenericTitle(t)) return;
 
         events.push({
-          source: "Cameo Cinema",
-          town: "st-helena",
-          tag: "movies",
           title: t,
-          url: altUrls[1] || altUrls[0],
+          url: comingUrl,
           dateISO: null,
-          when: null,
+          when: "Date and time on website.",
           details: "Coming soon. Details on website.",
           price: "Price not provided.",
-          contact: `For more information call ${cameoMeta.phone}, email ${cameoMeta.email} or visit their website (${altUrls[1] || altUrls[0]}).`,
+          contact: `For more information call ${cameoMeta.phone}, email ${cameoMeta.email} or visit their website (${comingUrl}).`,
           address: cameoMeta.address,
+          town: "st-helena",
+          tag: "movies",
         });
       });
     } catch (_) {}
@@ -582,13 +586,7 @@ async function parseCameo(listUrl, altUrls, filters) {
   return filterAndRank(events, filters);
 }
 
-function sendJson(res, statusCode, payload) {
-  res.statusCode = statusCode;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.end(JSON.stringify(payload, null, 2));
-}
-
+// -------------------- Handler --------------------
 export default async function handler(req, res) {
   try {
     const reqUrl = typeof req.url === "string" ? req.url : "/api/search";
@@ -611,14 +609,18 @@ export default async function handler(req, res) {
 
     const tasks = SOURCES.map(async (s) => {
       try {
+        // Respect "movies" filter strictly
         if (type === "movies" && s.type !== "movies") return [];
         if (type !== "movies" && s.type === "movies") return [];
 
         if (s.id === "donapa") return await parseDoNapa(s.listUrl, filters);
         if (s.id === "napa_library") return await parseNapaLibrary(s.listUrl, filters);
+        if (s.id === "visit_napa_valley") return await parseVisitNapaValley(s.listUrl, filters);
+
         if (s.id === "amcan_chamber") return await parseGrowthZone(s.listUrl, s.name, "american-canyon", filters);
         if (s.id === "calistoga_chamber") return await parseGrowthZone(s.listUrl, s.name, "calistoga", filters);
         if (s.id === "yountville_chamber") return await parseGrowthZone(s.listUrl, s.name, "yountville", filters);
+
         if (s.id === "cameo") return await parseCameo(s.listUrl, s.altUrls || [], filters);
 
         return [];
@@ -641,9 +643,9 @@ export default async function handler(req, res) {
     }
 
     const final = deduped.slice(0, limit);
-
     sendJson(res, 200, { ok: true, count: final.length, results: final });
   } catch (e) {
     sendJson(res, 500, { ok: false, error: e?.message || String(e) });
   }
 }
+

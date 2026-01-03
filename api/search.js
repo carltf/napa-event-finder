@@ -1,6 +1,4 @@
-import cheerio from "cheerio";
-import fs from "fs/promises";
-import path from "path";
+import * as cheerio from "cheerio";
 
 // Simple 10-minute in-memory cache (per serverless instance)
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -66,8 +64,11 @@ async function fetchText(url) {
   if (cached) return cached;
 
   const res = await fetch(url, {
-    headers: { "User-Agent": "NapaValleyFeaturesEventFinder/1.0 (+https://napavalleyfeatures.com)" },
+    headers: {
+      "User-Agent": "NapaValleyFeaturesEventFinder/1.0 (+https://napavalleyfeatures.com)",
+    },
   });
+
   if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
 
   const txt = await res.text();
@@ -109,7 +110,11 @@ function formatWeekender(event) {
     event.contact ||
     (event.url ? `For more information visit their website (${event.url}).` : "For more information visit their website.");
   const address = event.address || "Venue address not provided.";
-  return { header, body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim() };
+
+  return {
+    header,
+    body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim(),
+  };
 }
 
 function filterAndRank(events, filters) {
@@ -135,6 +140,53 @@ function filterAndRank(events, filters) {
   return out.map(formatWeekender);
 }
 
+// Master source list is inlined (avoids fs bundling issues on Vercel)
+const SOURCES = [
+  {
+    id: "donapa",
+    name: "Do Napa",
+    type: "calendar",
+    listUrl: "https://donapa.com/upcoming-events/",
+  },
+  {
+    id: "napa_library",
+    name: "Napa County Library Events",
+    type: "calendar",
+    listUrl: "https://events.napalibrary.org/events?n=60&r=days",
+  },
+  {
+    id: "amcan_chamber",
+    name: "American Canyon Chamber Events",
+    type: "calendar",
+    listUrl: "https://business.amcanchamber.org/events",
+  },
+  {
+    id: "calistoga_chamber",
+    name: "Calistoga Chamber Events",
+    type: "calendar",
+    listUrl: "https://chamber.calistogachamber.net/events",
+  },
+  {
+    id: "yountville_chamber",
+    name: "Yountville Chamber Events",
+    type: "calendar",
+    listUrl: "https://web.yountvillechamber.com/events",
+  },
+  {
+    id: "visit_napa_valley",
+    name: "Visit Napa Valley Events",
+    type: "calendar",
+    listUrl: "https://www.visitnapavalley.com/events/",
+  },
+  {
+    id: "cameo",
+    name: "Cameo Cinema",
+    type: "movies",
+    listUrl: "https://www.cameocinema.com/",
+    altUrls: ["https://www.cameocinema.com/movie-calendar", "https://www.cameocinema.com/coming-soon"],
+  },
+];
+
 // --- Parsers (best-effort) ---
 
 async function parseDoNapa(listUrl, filters) {
@@ -150,7 +202,9 @@ async function parseDoNapa(listUrl, filters) {
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
     const parentText = $(a).parent().text().replace(/\s+/g, " ").trim();
-    const dateMatch = parentText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
+    const dateMatch = parentText.match(
+      /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i
+    );
 
     let dateISO = null;
     let when = null;
@@ -205,7 +259,6 @@ async function parseGrowthZone(listUrl, sourceName, townSlug, filters) {
     let dateISO = null;
     let when = null;
     if (dm) {
-      // (Also fixes your original tiny bug: Jul should be 6 not 5)
       const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
       const m = monthMap[dm[1].toLowerCase()];
       const d = parseInt(dm[2], 10);
@@ -320,8 +373,7 @@ async function parseCameo(listUrl, altUrls, filters) {
     if (t && t.length > 2 && t.length < 80 && !t.toLowerCase().includes("menu")) titles.push(t);
   });
 
-  const now = new Date();
-  const todayISO = toISODate(now);
+  const todayISO = toISODate(new Date());
 
   const cameoMeta = {
     address: "1340 Main St., St. Helena.",
@@ -346,7 +398,6 @@ async function parseCameo(listUrl, altUrls, filters) {
     });
   }
 
-  // Coming soon (optional)
   if (altUrls && altUrls.length) {
     try {
       const coming = await fetchText(altUrls[1] || altUrls[0]);
@@ -376,9 +427,18 @@ async function parseCameo(listUrl, altUrls, filters) {
   return filterAndRank(events, filters);
 }
 
+function sendJson(res, statusCode, payload) {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.end(JSON.stringify(payload, null, 2));
+}
+
 export default async function handler(req, res) {
   try {
-    const url = new URL(req.url, "http://localhost");
+    const reqUrl = typeof req.url === "string" ? req.url : "/api/search";
+    const url = new URL(reqUrl, "http://localhost");
+
     const town = url.searchParams.get("town") || "all";
     const type = url.searchParams.get("type") || "any";
     const start = url.searchParams.get("start") || "";
@@ -392,11 +452,9 @@ export default async function handler(req, res) {
 
     const filters = { town, type, startISO, endISO };
 
-    const sourcesPath = path.join(process.cwd(), "sources.json");
-    const sources = JSON.parse(await fs.readFile(sourcesPath, "utf8"));
-
     let all = [];
-    const tasks = sources.map(async (s) => {
+
+    const tasks = SOURCES.map(async (s) => {
       try {
         if (type === "movies" && s.type !== "movies") return [];
         if (type !== "movies" && s.type === "movies") return [];
@@ -417,6 +475,7 @@ export default async function handler(req, res) {
     const results = await Promise.all(tasks);
     for (const r of results) all = all.concat(r);
 
+    // Deduplicate identical formatted outputs
     const seen = new Set();
     const deduped = [];
     for (const item of all) {
@@ -428,11 +487,8 @@ export default async function handler(req, res) {
 
     const final = deduped.slice(0, limit);
 
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.status(200).send(JSON.stringify({ ok: true, count: final.length, results: final }, null, 2));
+    sendJson(res, 200, { ok: true, count: final.length, results: final });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message || String(e) });
+    sendJson(res, 500, { ok: false, error: e?.message || String(e) });
   }
 }
-

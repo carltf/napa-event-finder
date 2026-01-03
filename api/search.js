@@ -1,14 +1,24 @@
-import cheerio from "cheerio";
+import * as cheerioNS from "cheerio";
 
 /**
- * Napa Valley Event Finder — API
- * - Inlines sources (no fs bundling issues)
- * - Tightens link rules (especially DoNapa)
- * - Optionally fetches event detail pages and extracts JSON-LD Event data
- * - Accepts YYYY-MM-DD and MM/DD/YYYY dates
+ * Napa Valley Event Finder — API (Vercel)
+ * - Robust cheerio import (no default-export assumptions)
+ * - Sources are inlined (no fs/path read issues)
+ * - Accepts YYYY-MM-DD and MM/DD/YYYY for start/end
+ * - Tightens DoNapa to donapa.com/event/... and pulls event-page JSON-LD when available
+ * - Always returns JSON from handler (unless the module fails to load)
  */
 
-// -------------------- Cache --------------------
+// --- Robust cheerio loader ---
+const load =
+  cheerioNS.load ||
+  (cheerioNS.default && cheerioNS.default.load);
+
+if (!load) {
+  throw new Error("Cheerio 'load' not found. Check cheerio package version.");
+}
+
+// --- Simple 10-minute in-memory cache (per serverless instance) ---
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const cache = globalThis.__NVF_CACHE__ || (globalThis.__NVF_CACHE__ = new Map());
 
@@ -25,7 +35,7 @@ function setCached(key, value) {
   cache.set(key, { t: Date.now(), v: value });
 }
 
-// -------------------- Sources (inline) --------------------
+// --- Sources (inline) ---
 const SOURCES = [
   { id: "donapa", name: "Do Napa", type: "calendar", listUrl: "https://donapa.com/upcoming-events/" },
   { id: "napa_library", name: "Napa County Library Events", type: "calendar", listUrl: "https://events.napalibrary.org/events?n=60&r=days" },
@@ -42,7 +52,7 @@ const SOURCES = [
   },
 ];
 
-// -------------------- Helpers --------------------
+// --- Response helper ---
 function sendJson(res, statusCode, payload) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -50,6 +60,7 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload, null, 2));
 }
 
+// --- Text/date helpers ---
 function cleanText(s) {
   return String(s || "").replace(/\s+/g, " ").trim();
 }
@@ -59,9 +70,7 @@ function toISODate(d) {
 }
 
 function parseISODate(s) {
-  // Accept:
-  // - YYYY-MM-DD
-  // - MM/DD/YYYY or M/D/YYYY (Safari/Squarespace may provide this)
+  // Accept YYYY-MM-DD and MM/DD/YYYY (Safari/Squarespace sometimes yields MM/DD/YYYY)
   const str = (s || "").trim();
 
   let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
@@ -72,9 +81,7 @@ function parseISODate(s) {
 
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str);
   if (m) {
-    const mm = +m[1],
-      dd = +m[2],
-      yy = +m[3];
+    const mm = +m[1], dd = +m[2], yy = +m[3];
     const dt = new Date(Date.UTC(yy, mm - 1, dd));
     return isNaN(dt.getTime()) ? null : dt;
   }
@@ -95,6 +102,69 @@ function withinRange(dateISO, startISO, endISO) {
   return true;
 }
 
+function titleCase(s) {
+  if (!s) return s;
+  const small = new Set(["a","an","and","at","but","by","for","in","of","on","or","the","to","with"]);
+  const parts = s.trim().split(/\s+/);
+  return parts.map((w,i)=>{
+    const clean = w.toLowerCase();
+    if (i>0 && small.has(clean)) return clean;
+    if (/^[A-Z0-9&]+$/.test(w)) return w;
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
+  }).join(" ");
+}
+
+function isGenericTitle(t) {
+  const x = cleanText(t).toLowerCase();
+  return !x || x === "read more" || x === "event details" || x === "learn more" || x === "details" || x === "view event";
+}
+
+// AP-ish date for “when” line
+function apDateFromYMD(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
+  if (!m) return null;
+  const dt = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+  if (isNaN(dt.getTime())) return null;
+  const weekdays = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const months = ["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
+  return `${weekdays[dt.getUTCDay()]}, ${months[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
+}
+
+// Use the clock digits in the ISO string (avoid timezone conversion surprises)
+function apTimeFromISOClock(iso) {
+  const m = /T(\d{2}):(\d{2})/.exec(iso || "");
+  if (!m) return null;
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  const ampm = hh >= 12 ? "p.m." : "a.m.";
+  hh = hh % 12;
+  if (hh === 0) hh = 12;
+  if (mm === 0) return `${hh} ${ampm}`;
+  return `${hh}:${String(mm).padStart(2, "0")} ${ampm}`;
+}
+
+function formatTimeRange(startISO, endISO) {
+  const t1 = apTimeFromISOClock(startISO);
+  const t2 = apTimeFromISOClock(endISO);
+  if (!t1 && !t2) return null;
+  if (t1 && !t2) return t1;
+  if (!t1 && t2) return t2;
+
+  const mer1 = t1.endsWith("a.m.") ? "a.m." : "p.m.";
+  const mer2 = t2.endsWith("a.m.") ? "a.m." : "p.m.";
+  const t1NoMer = t1.replace(/\s(a\.m\.|p\.m\.)$/, "");
+
+  if (mer1 === mer2) return `${t1NoMer} to ${t2}`;
+  return `${t1} to ${t2}`;
+}
+
+function truncate(s, max = 260) {
+  const x = cleanText(s);
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1).trimEnd() + "…";
+}
+
+// --- Networking ---
 async function fetchText(url) {
   const key = "GET:" + url;
   const cached = getCached(key);
@@ -114,86 +184,7 @@ async function fetchText(url) {
   return txt;
 }
 
-function titleCase(s) {
-  if (!s) return s;
-  const small = new Set(["a", "an", "and", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with"]);
-  const parts = s.trim().split(/\s+/);
-  return parts
-    .map((w, i) => {
-      const clean = w.toLowerCase();
-      if (i > 0 && small.has(clean)) return clean;
-      if (/^[A-Z0-9&]+$/.test(w)) return w;
-      return clean.charAt(0).toUpperCase() + clean.slice(1);
-    })
-    .join(" ");
-}
-
-function isGenericTitle(t) {
-  const x = cleanText(t).toLowerCase();
-  return (
-    !x ||
-    x === "read more" ||
-    x === "event details" ||
-    x === "learn more" ||
-    x === "details" ||
-    x === "view event"
-  );
-}
-
-function apDateFromYMD(ymd) {
-  // ymd = YYYY-MM-DD
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
-  if (!m) return null;
-  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-  if (isNaN(dt.getTime())) return null;
-
-  const weekdays = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-  const months = ["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
-
-  return `${weekdays[dt.getUTCDay()]}, ${months[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
-}
-
-function apTimeFromISOClock(iso) {
-  // Parse time without timezone conversion (use clock digits in the ISO string)
-  const m = /T(\d{2}):(\d{2})/.exec(iso || "");
-  if (!m) return null;
-
-  let hh = parseInt(m[1], 10);
-  const mm = parseInt(m[2], 10);
-
-  const ampm = hh >= 12 ? "p.m." : "a.m.";
-  hh = hh % 12;
-  if (hh === 0) hh = 12;
-
-  if (mm === 0) return `${hh} ${ampm}`;
-  return `${hh}:${String(mm).padStart(2, "0")} ${ampm}`;
-}
-
-function formatTimeRange(startISO, endISO) {
-  const t1 = apTimeFromISOClock(startISO);
-  const t2 = apTimeFromISOClock(endISO);
-
-  if (!t1 && !t2) return null;
-  if (t1 && !t2) return t1;
-  if (!t1 && t2) return t2;
-
-  // If both have same meridiem, drop the first meridiem (AP style)
-  const mer1 = t1.endsWith("a.m.") ? "a.m." : "p.m.";
-  const mer2 = t2.endsWith("a.m.") ? "a.m." : "p.m.";
-
-  const t1NoMer = t1.replace(/\s(a\.m\.|p\.m\.)$/, "");
-  if (mer1 === mer2) {
-    return `${t1NoMer} to ${t2}`;
-  }
-  return `${t1} to ${t2}`;
-}
-
-function truncate(s, max = 260) {
-  const x = cleanText(s);
-  if (x.length <= max) return x;
-  return x.slice(0, max - 1).trimEnd() + "…";
-}
-
+// --- Weekender output formatting ---
 function formatWeekender(event) {
   const header = titleCase(event.title || "Event");
   const dateLine = event.when || "Date and time on website.";
@@ -204,10 +195,7 @@ function formatWeekender(event) {
     (event.url ? `For more information visit their website (${event.url}).` : "For more information visit their website.");
   const address = event.address || "Venue address not provided.";
 
-  return {
-    header,
-    body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim(),
-  };
+  return { header, body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim() };
 }
 
 function filterAndRank(events, filters) {
@@ -233,7 +221,7 @@ function filterAndRank(events, filters) {
   return out.map(formatWeekender);
 }
 
-// -------------------- JSON-LD extraction --------------------
+// --- JSON-LD Event extraction ---
 function getJsonLdEvents($) {
   const out = [];
   $("script[type='application/ld+json']").each((_, el) => {
@@ -242,16 +230,11 @@ function getJsonLdEvents($) {
     try {
       const data = JSON.parse(raw);
       const stack = Array.isArray(data) ? data : [data];
-
       for (const item of stack) {
         if (!item) continue;
-
         if (item["@type"] === "Event") out.push(item);
-
         if (Array.isArray(item["@graph"])) {
-          for (const g of item["@graph"]) {
-            if (g && g["@type"] === "Event") out.push(g);
-          }
+          for (const g of item["@graph"]) if (g && g["@type"] === "Event") out.push(g);
         }
       }
     } catch (_) {}
@@ -261,21 +244,14 @@ function getJsonLdEvents($) {
 
 function extractStreetAddress(addr) {
   if (!addr) return null;
-
-  if (typeof addr === "string") {
-    // Not ideal (often includes city/state); keep conservative
-    return null;
-  }
-
+  if (typeof addr === "string") return null; // too messy, avoid inventing
   const street = cleanText(addr.streetAddress);
-  if (street) return `${street}.`;
-
-  return null;
+  return street ? `${street}.` : null;
 }
 
 async function extractEventFromPage(url, opts = {}) {
   const html = await fetchText(url);
-  const $ = cheerio.load(html);
+  const $ = load(html);
 
   let title = null;
   let startISO = null;
@@ -293,39 +269,29 @@ async function extractEventFromPage(url, opts = {}) {
     endISO = ev.endDate || null;
     description = ev.description || null;
 
-    // location/address
     const loc = Array.isArray(ev.location) ? ev.location[0] : ev.location;
-    if (loc && loc.address) {
-      address = extractStreetAddress(loc.address);
-    }
+    if (loc && loc.address) address = extractStreetAddress(loc.address);
 
-    // offers/price
     const offers = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
-    if (offers && offers.price) {
-      // Keep simple, don't invent currency formatting
-      price = `Tickets ${offers.price}.`;
-    }
+    if (offers && offers.price) price = `Tickets ${offers.price}.`;
   }
 
-  // OG/H1 fallback for title
   if (!title) {
     const ogt = $("meta[property='og:title']").attr("content");
     title = cleanText(ogt) || cleanText($("h1").first().text()) || cleanText($("title").text()) || null;
   }
 
-  // Build when + dateISO (use ISO date part; no timezone conversion)
+  // dateISO + when
   let dateISO = null;
   let when = null;
-
-  const ymdMatch = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "");
-  if (ymdMatch) {
-    dateISO = ymdMatch[1];
+  const ymd = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "");
+  if (ymd) {
+    dateISO = ymd[1];
     const apDate = apDateFromYMD(dateISO);
     const timeStr = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
     when = apDate ? (timeStr ? `${apDate}, ${timeStr}` : apDate) : null;
   }
 
-  // Details: keep short and safe
   let details = "Details on website.";
   if (description) details = truncate(description);
   if (details && !details.endsWith(".")) details += ".";
@@ -368,12 +334,10 @@ async function extractOrFallback(url, fallbackTitle, opts = {}) {
   }
 }
 
-// -------------------- Parsers --------------------
-
-// DoNapa: ONLY donapa.com/event/... and then fetch detail pages
+// --- Parsers ---
 async function parseDoNapa(listUrl, filters) {
   const html = await fetchText(listUrl);
-  const $ = cheerio.load(html);
+  const $ = load(html);
 
   const found = [];
   $("a[href]").each((_, a) => {
@@ -390,7 +354,7 @@ async function parseDoNapa(listUrl, filters) {
     found.push(u.toString());
   });
 
-  const unique = Array.from(new Set(found)).slice(0, 12);
+  const unique = Array.from(new Set(found)).slice(0, 10);
 
   const events = [];
   for (const url of unique) {
@@ -401,17 +365,15 @@ async function parseDoNapa(listUrl, filters) {
   return filterAndRank(events, filters);
 }
 
-// GrowthZone chambers: /events/details/... then extract details (best-effort)
 async function parseGrowthZone(listUrl, sourceName, townSlug, filters) {
   const html = await fetchText(listUrl);
-  const $ = cheerio.load(html);
+  const $ = load(html);
 
   const links = [];
   $("a[href*='/events/details/']").each((_, a) => {
     const href = $(a).attr("href") || "";
     const title = cleanText($(a).text());
     if (!href) return;
-
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
     links.push({ url: fullUrl, title });
   });
@@ -422,7 +384,7 @@ async function parseGrowthZone(listUrl, sourceName, townSlug, filters) {
     if (!x.url || seen.has(x.url)) continue;
     seen.add(x.url);
     unique.push(x);
-    if (unique.length >= 12) break;
+    if (unique.length >= 10) break;
   }
 
   const events = [];
@@ -434,10 +396,9 @@ async function parseGrowthZone(listUrl, sourceName, townSlug, filters) {
   return filterAndRank(events, filters);
 }
 
-// Napa Library: follow /event/... pages and extract
 async function parseNapaLibrary(listUrl, filters) {
   const html = await fetchText(listUrl);
-  const $ = cheerio.load(html);
+  const $ = load(html);
 
   const links = [];
   $("a[href]").each((_, a) => {
@@ -449,7 +410,6 @@ async function parseNapaLibrary(listUrl, filters) {
     try { u = new URL(fullUrl); } catch { return; }
 
     if (!u.hostname.includes("napalibrary.org")) return;
-    // Keep event-ish links, avoid search/index pages
     if (!u.pathname.includes("/event")) return;
 
     const t = cleanText($(a).text());
@@ -459,11 +419,10 @@ async function parseNapaLibrary(listUrl, filters) {
   const seen = new Set();
   const unique = [];
   for (const x of links) {
-    const key = x.url;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
+    if (!x.url || seen.has(x.url)) continue;
+    seen.add(x.url);
     unique.push(x);
-    if (unique.length >= 12) break;
+    if (unique.length >= 10) break;
   }
 
   const events = [];
@@ -475,10 +434,9 @@ async function parseNapaLibrary(listUrl, filters) {
   return filterAndRank(events, filters);
 }
 
-// Visit Napa Valley: follow /event/... pages and extract
 async function parseVisitNapaValley(listUrl, filters) {
   const html = await fetchText(listUrl);
-  const $ = cheerio.load(html);
+  const $ = load(html);
 
   const found = [];
   $("a[href]").each((_, a) => {
@@ -502,7 +460,7 @@ async function parseVisitNapaValley(listUrl, filters) {
     if (!x.url || seen.has(x.url)) continue;
     seen.add(x.url);
     unique.push(x);
-    if (unique.length >= 12) break;
+    if (unique.length >= 10) break;
   }
 
   const events = [];
@@ -514,12 +472,11 @@ async function parseVisitNapaValley(listUrl, filters) {
   return filterAndRank(events, filters);
 }
 
-// Cameo: keep simple listing, stable contact + address
 async function parseCameo(listUrl, altUrls, filters) {
   const html = await fetchText(listUrl);
-  const $ = cheerio.load(html);
-  const events = [];
+  const $ = load(html);
 
+  const events = [];
   const titles = [];
   $("h2, h3").each((_, el) => {
     const t = cleanText($(el).text());
@@ -527,12 +484,7 @@ async function parseCameo(listUrl, altUrls, filters) {
   });
 
   const todayISO = toISODate(new Date());
-
-  const cameoMeta = {
-    address: "1340 Main St., St. Helena.",
-    phone: "707-963-9779",
-    email: "info@cameocinema.com",
-  };
+  const cameoMeta = { address: "1340 Main St., St. Helena.", phone: "707-963-9779", email: "info@cameocinema.com" };
 
   for (const t of titles.slice(0, 8)) {
     if (isGenericTitle(t)) continue;
@@ -553,40 +505,10 @@ async function parseCameo(listUrl, altUrls, filters) {
     });
   }
 
-  // Coming soon (optional)
-  if (altUrls && altUrls.length) {
-    try {
-      const comingUrl = altUrls[1] || altUrls[0];
-      const coming = await fetchText(comingUrl);
-      const $$ = cheerio.load(coming);
-
-      $$("h2, h3, h4").each((_, el) => {
-        const t = cleanText($$(el).text());
-        if (!t || t.length < 2) return;
-        if (t.toLowerCase().includes("coming soon")) return;
-        if (t.toLowerCase().includes("see all")) return;
-        if (isGenericTitle(t)) return;
-
-        events.push({
-          title: t,
-          url: comingUrl,
-          dateISO: null,
-          when: "Date and time on website.",
-          details: "Coming soon. Details on website.",
-          price: "Price not provided.",
-          contact: `For more information call ${cameoMeta.phone}, email ${cameoMeta.email} or visit their website (${comingUrl}).`,
-          address: cameoMeta.address,
-          town: "st-helena",
-          tag: "movies",
-        });
-      });
-    } catch (_) {}
-  }
-
   return filterAndRank(events, filters);
 }
 
-// -------------------- Handler --------------------
+// --- Handler ---
 export default async function handler(req, res) {
   try {
     const reqUrl = typeof req.url === "string" ? req.url : "/api/search";
@@ -609,7 +531,6 @@ export default async function handler(req, res) {
 
     const tasks = SOURCES.map(async (s) => {
       try {
-        // Respect "movies" filter strictly
         if (type === "movies" && s.type !== "movies") return [];
         if (type !== "movies" && s.type === "movies") return [];
 
@@ -642,10 +563,8 @@ export default async function handler(req, res) {
       deduped.push(item);
     }
 
-    const final = deduped.slice(0, limit);
-    sendJson(res, 200, { ok: true, count: final.length, results: final });
+    sendJson(res, 200, { ok: true, count: deduped.slice(0, limit).length, results: deduped.slice(0, limit) });
   } catch (e) {
     sendJson(res, 500, { ok: false, error: e?.message || String(e) });
   }
 }
-

@@ -63,6 +63,161 @@ async function fetchText(url) {
   const cached = getCached(key);
   if (cached) return cached;
 
+  function cleanText(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
+function isGenericTitle(t) {
+  const x = cleanText(t).toLowerCase();
+  return (
+    !x ||
+    x === "read more" ||
+    x === "event details" ||
+    x === "learn more" ||
+    x === "details" ||
+    x === "view event"
+  );
+}
+
+function getJsonLdEvents($) {
+  const out = [];
+  $("script[type='application/ld+json']").each((_, el) => {
+    const raw = $(el).text();
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      const arr = Array.isArray(data) ? data : [data];
+      for (const item of arr) {
+        if (!item) continue;
+        if (item["@type"] === "Event") out.push(item);
+        if (item["@graph"] && Array.isArray(item["@graph"])) {
+          for (const g of item["@graph"]) {
+            if (g && g["@type"] === "Event") out.push(g);
+          }
+        }
+      }
+    } catch (_) {}
+  });
+  return out;
+}
+
+function apTimeFromISO(iso) {
+  // iso can include time: 2026-01-03T19:00:00-08:00
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    let hrs = d.getHours();
+    const mins = d.getMinutes();
+    const ampm = hrs >= 12 ? "p.m." : "a.m.";
+    hrs = hrs % 12;
+    if (hrs === 0) hrs = 12;
+    return mins ? `${hrs}:${String(mins).padStart(2, "0")} ${ampm}` : `${hrs} ${ampm}`;
+  } catch {
+    return null;
+  }
+}
+
+function apDateFromISO(iso) {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const weekdays = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    const months = ["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
+    return `${weekdays[d.getDay()]}, ${months[d.getMonth()]} ${d.getDate()}`;
+  } catch {
+    return null;
+  }
+}
+
+function extractAddress(loc) {
+  // loc can be object or string depending on schema
+  const addr = loc?.address;
+  if (!addr) return null;
+
+  // addr can be object or string
+  if (typeof addr === "string") return cleanText(addr);
+
+  const parts = [
+    addr.streetAddress,
+    addr.addressLocality,
+  ].filter(Boolean);
+
+  // Weekender rule: street address only is ideal, but locality helps if all we have
+  // We'll return "streetAddress." if present; otherwise locality string.
+  if (addr.streetAddress) return `${cleanText(addr.streetAddress)}.`;
+  if (parts.length) return `${cleanText(parts.join(", "))}.`;
+
+  return null;
+}
+
+async function extractEventFromPage(url, fallbackTown) {
+  const html = await fetchText(url);
+  const $ = cheerio.load(html);
+
+  // 1) JSON-LD Event (best)
+  const ldEvents = getJsonLdEvents($);
+  const ev = ldEvents[0];
+
+  let title = null;
+  let startISO = null;
+  let endISO = null;
+  let venueName = null;
+  let address = null;
+  let price = null;
+  let details = null;
+
+  if (ev) {
+    title = ev.name || null;
+    startISO = ev.startDate || null;
+    endISO = ev.endDate || null;
+
+    if (ev.location) {
+      const loc = Array.isArray(ev.location) ? ev.location[0] : ev.location;
+      venueName = loc?.name || null;
+      address = extractAddress(loc) || null;
+    }
+
+    if (ev.offers) {
+      const offer = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
+      if (offer?.price) price = `Tickets ${offer.price}${offer.priceCurrency ? " " + offer.priceCurrency : ""}.`;
+    }
+
+    if (ev.description) details = cleanText(ev.description);
+  }
+
+  // 2) OG / H1 fallback
+  if (!title) {
+    const ogt = $("meta[property='og:title']").attr("content");
+    title = cleanText(ogt) || cleanText($("h1").first().text()) || cleanText($("title").text()) || null;
+  }
+
+  // Build “when”
+  const dateISO = startISO ? toISODate(new Date(startISO)) : null;
+  let when = null;
+  if (startISO) {
+    const apDate = apDateFromISO(startISO);
+    const apTime = apTimeFromISO(startISO);
+    when = apDate ? (apTime ? `${apDate}, ${apTime}` : apDate) : null;
+  }
+
+  // Details sentence (keep it short, rely on website)
+  const venueBit = venueName ? ` at ${cleanText(venueName)}.` : "";
+  const detailsShort = details ? `${details}${details.endsWith(".") ? "" : "."}` : `Details on website.${venueBit}`;
+
+  return {
+    title: title || "Event",
+    url,
+    dateISO,
+    when: when || "Date and time on website.",
+    details: detailsShort,
+    price: price || "Price not provided.",
+    contact: `For more information visit their website (${url}).`,
+    address: address || "Venue address not provided.",
+    town: fallbackTown || "all",
+    tag: "any",
+  };
+}
+
   const res = await fetch(url, {
     headers: {
       "User-Agent": "NapaValleyFeaturesEventFinder/1.0 (+https://napavalleyfeatures.com)",

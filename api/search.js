@@ -9,29 +9,41 @@ const cache = globalThis.__NVF_CACHE__ || (globalThis.__NVF_CACHE__ = new Map())
 function getCached(key) {
   const hit = cache.get(key);
   if (!hit) return null;
-  if (Date.now() - hit.t > CACHE_TTL_MS) { cache.delete(key); return null; }
+  if (Date.now() - hit.t > CACHE_TTL_MS) {
+    cache.delete(key);
+    return null;
+  }
   return hit.v;
 }
-function setCached(key, value) { cache.set(key, { t: Date.now(), v: value }); }
+function setCached(key, value) {
+  cache.set(key, { t: Date.now(), v: value });
+}
 
-function toISODate(d) { return d.toISOString().slice(0,10); }
+function toISODate(d) {
+  return d.toISOString().slice(0, 10);
+}
 
 function parseISODate(s) {
   // Accept:
   // - YYYY-MM-DD
-  // - MM/DD/YYYY or M/D/YYYY (some browsers may provide this)
+  // - MM/DD/YYYY or M/D/YYYY (Safari/Squarespace may provide this)
   const str = (s || "").trim();
+
   let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
   if (m) {
-    const dt = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+    const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
     return isNaN(dt.getTime()) ? null : dt;
   }
+
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str);
   if (m) {
-    const mm = +m[1], dd = +m[2], yy = +m[3];
-    const dt = new Date(Date.UTC(yy, mm-1, dd));
+    const mm = +m[1],
+      dd = +m[2],
+      yy = +m[3];
+    const dt = new Date(Date.UTC(yy, mm - 1, dd));
     return isNaN(dt.getTime()) ? null : dt;
   }
+
   return null;
 }
 
@@ -52,10 +64,12 @@ async function fetchText(url) {
   const key = "GET:" + url;
   const cached = getCached(key);
   if (cached) return cached;
+
   const res = await fetch(url, {
-    headers: { "User-Agent": "NapaValleyFeaturesEventFinder/1.0 (+https://napavalleyfeatures.com)" }
+    headers: { "User-Agent": "NapaValleyFeaturesEventFinder/1.0 (+https://napavalleyfeatures.com)" },
   });
   if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
+
   const txt = await res.text();
   setCached(key, txt);
   return txt;
@@ -64,8 +78,8 @@ async function fetchText(url) {
 function apDateTime(dateISO, timeStr) {
   if (!dateISO) return null;
   const dt = new Date(dateISO + "T00:00:00Z");
-  const weekdays = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-  const months = ["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
+  const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const months = ["Jan.", "Feb.", "March", "April", "May", "June", "July", "Aug.", "Sept.", "Oct.", "Nov.", "Dec."];
   const wd = weekdays[dt.getUTCDay()];
   const mo = months[dt.getUTCMonth()];
   const day = dt.getUTCDate();
@@ -74,14 +88,16 @@ function apDateTime(dateISO, timeStr) {
 
 function titleCase(s) {
   if (!s) return s;
-  const small = new Set(["a","an","and","at","but","by","for","in","of","on","or","the","to","with"]);
+  const small = new Set(["a", "an", "and", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with"]);
   const parts = s.trim().split(/\s+/);
-  return parts.map((w,i)=>{
-    const clean = w.toLowerCase();
-    if (i>0 && small.has(clean)) return clean;
-    if (/^[A-Z0-9&]+$/.test(w)) return w;
-    return clean.charAt(0).toUpperCase() + clean.slice(1);
-  }).join(" ");
+  return parts
+    .map((w, i) => {
+      const clean = w.toLowerCase();
+      if (i > 0 && small.has(clean)) return clean;
+      if (/^[A-Z0-9&]+$/.test(w)) return w;
+      return clean.charAt(0).toUpperCase() + clean.slice(1);
+    })
+    .join(" ");
 }
 
 function formatWeekender(event) {
@@ -89,9 +105,11 @@ function formatWeekender(event) {
   const dateLine = event.when || "Date and time on website.";
   const details = event.details || "Details on website.";
   const price = event.price || "Price not provided.";
-  const contact = event.contact || (event.url ? `For more information visit their website (${event.url}).` : "For more information visit their website.");
+  const contact =
+    event.contact ||
+    (event.url ? `For more information visit their website (${event.url}).` : "For more information visit their website.");
   const address = event.address || "Venue address not provided.";
-  return { header, body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g," ").trim() };
+  return { header, body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim() };
 }
 
 function filterAndRank(events, filters) {
@@ -100,18 +118,18 @@ function filterAndRank(events, filters) {
   const startISO = filters.startISO || null;
   const endISO = filters.endISO || null;
 
-  let out = events.filter(e => {
+  let out = events.filter((e) => {
     const etown = (e.town || "all").toLowerCase();
-    const matchesTown = (town === "all") || (etown === town);
-    const matchesType = (type === "any") || (e.tag === type) || (e.tags && e.tags.includes(type));
+    const matchesTown = town === "all" || etown === town;
+    const matchesType = type === "any" || e.tag === type || (e.tags && e.tags.includes(type));
     const matchesDate = withinRange(e.dateISO, startISO, endISO);
     return matchesTown && matchesType && matchesDate;
   });
 
-  out.sort((a,b)=>{
+  out.sort((a, b) => {
     if (!!a.dateISO !== !!b.dateISO) return a.dateISO ? -1 : 1;
     if (a.dateISO && b.dateISO) return a.dateISO.localeCompare(b.dateISO);
-    return (a.title||"").localeCompare(b.title||"");
+    return (a.title || "").localeCompare(b.title || "");
   });
 
   return out.map(formatWeekender);
@@ -131,17 +149,17 @@ async function parseDoNapa(listUrl, filters) {
     if (!href.includes("/event") && !href.includes("/events")) return;
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
-    const parentText = $(a).parent().text().replace(/\s+/g," ").trim();
+    const parentText = $(a).parent().text().replace(/\s+/g, " ").trim();
     const dateMatch = parentText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
 
     let dateISO = null;
     let when = null;
     if (dateMatch) {
-      const monthMap = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
+      const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
       const m = monthMap[dateMatch[1].toLowerCase()];
-      const d = parseInt(dateMatch[2],10);
-      const y = (new Date()).getUTCFullYear();
-      dateISO = toISODate(new Date(Date.UTC(y,m,d)));
+      const d = parseInt(dateMatch[2], 10);
+      const y = new Date().getUTCFullYear();
+      dateISO = toISODate(new Date(Date.UTC(y, m, d)));
       when = apDateTime(dateISO, null);
     }
 
@@ -156,7 +174,7 @@ async function parseDoNapa(listUrl, filters) {
       details: "Details on website.",
       price: "Price not provided.",
       contact: `For more information visit their website (${fullUrl}).`,
-      address: "Venue address not provided."
+      address: "Venue address not provided.",
     });
   });
 
@@ -177,21 +195,22 @@ async function parseGrowthZone(listUrl, sourceName, townSlug, filters) {
 
   $("a[href*='/events/details/']").each((_, a) => {
     const href = $(a).attr("href");
-    const title = $(a).text().replace(/\s+/g," ").trim();
+    const title = $(a).text().replace(/\s+/g, " ").trim();
     if (!title) return;
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
 
-    const cardText = $(a).closest("li,div,article,section").text().replace(/\s+/g," ").trim();
+    const cardText = $(a).closest("li,div,article,section").text().replace(/\s+/g, " ").trim();
     const dm = cardText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
 
     let dateISO = null;
     let when = null;
     if (dm) {
-      const monthMap = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:5,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
+      // (Also fixes your original tiny bug: Jul should be 6 not 5)
+      const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
       const m = monthMap[dm[1].toLowerCase()];
-      const d = parseInt(dm[2],10);
-      const y = (new Date()).getUTCFullYear();
-      dateISO = toISODate(new Date(Date.UTC(y,m,d)));
+      const d = parseInt(dm[2], 10);
+      const y = new Date().getUTCFullYear();
+      dateISO = toISODate(new Date(Date.UTC(y, m, d)));
       when = apDateTime(dateISO, null);
     }
 
@@ -206,7 +225,7 @@ async function parseGrowthZone(listUrl, sourceName, townSlug, filters) {
       details: "Details on website.",
       price: "Price not provided.",
       contact: `For more information visit their website (${fullUrl}).`,
-      address: "Venue address not provided."
+      address: "Venue address not provided.",
     });
   });
 
@@ -227,31 +246,31 @@ async function parseNapaLibrary(listUrl, filters) {
 
   $("a[href*='/event/'], a[href*='/events/']").each((_, a) => {
     const href = $(a).attr("href") || "";
-    const title = $(a).text().replace(/\s+/g," ").trim();
+    const title = $(a).text().replace(/\s+/g, " ").trim();
     if (!title || title.length < 4) return;
     if (href.includes("/events?") || href.endsWith("/events")) return;
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
-    const cardText = $(a).closest("article,li,div").text().replace(/\s+/g," ").trim();
+    const cardText = $(a).closest("article,li,div").text().replace(/\s+/g, " ").trim();
     const dm = cardText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})(?:,\s*(\d{4}))?/i);
 
     let dateISO = null;
     let when = null;
 
     if (dm) {
-      const monthMap = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
+      const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
       const m = monthMap[dm[1].toLowerCase()];
-      const d = parseInt(dm[2],10);
-      const y = dm[3] ? parseInt(dm[3],10) : (new Date()).getUTCFullYear();
-      dateISO = toISODate(new Date(Date.UTC(y,m,d)));
+      const d = parseInt(dm[2], 10);
+      const y = dm[3] ? parseInt(dm[3], 10) : new Date().getUTCFullYear();
+      dateISO = toISODate(new Date(Date.UTC(y, m, d)));
 
       const tm = cardText.match(/\b(\d{1,2})(?::(\d{2}))?\s*(a\.m\.|p\.m\.|AM|PM)\b/i);
       let timeStr = null;
       if (tm) {
-        const hour = parseInt(tm[1],10);
+        const hour = parseInt(tm[1], 10);
         const mins = tm[2] || "00";
         const ampm = tm[3].toLowerCase().includes("p") ? "p.m." : "a.m.";
-        timeStr = `${hour}:${mins} ${ampm}`.replace(":00 "," ");
+        timeStr = `${hour}:${mins} ${ampm}`.replace(":00 ", " ");
       }
       when = apDateTime(dateISO, timeStr);
     }
@@ -275,7 +294,7 @@ async function parseNapaLibrary(listUrl, filters) {
       details: "Library program. Details on website.",
       price: "Price not provided.",
       contact: `For more information visit their website (${fullUrl}).`,
-      address: "Venue address not provided."
+      address: "Venue address not provided.",
     });
   });
 
@@ -297,7 +316,7 @@ async function parseCameo(listUrl, altUrls, filters) {
 
   const titles = [];
   $("h2, h3").each((_, el) => {
-    const t = $(el).text().replace(/\s+/g," ").trim();
+    const t = $(el).text().replace(/\s+/g, " ").trim();
     if (t && t.length > 2 && t.length < 80 && !t.toLowerCase().includes("menu")) titles.push(t);
   });
 
@@ -307,7 +326,7 @@ async function parseCameo(listUrl, altUrls, filters) {
   const cameoMeta = {
     address: "1340 Main St., St. Helena.",
     phone: "707-963-9779",
-    email: "info@cameocinema.com"
+    email: "info@cameocinema.com",
   };
 
   for (const t of titles.slice(0, 10)) {
@@ -323,7 +342,7 @@ async function parseCameo(listUrl, altUrls, filters) {
       details: "Now playing. Showtimes on website.",
       price: "Price not provided.",
       contact: `For more information call ${cameoMeta.phone}, email ${cameoMeta.email} or visit their website (${listUrl}).`,
-      address: cameoMeta.address
+      address: cameoMeta.address,
     });
   }
 
@@ -333,7 +352,7 @@ async function parseCameo(listUrl, altUrls, filters) {
       const coming = await fetchText(altUrls[1] || altUrls[0]);
       const $$ = cheerio.load(coming);
       $$("h2, h3, h4").each((_, el) => {
-        const t = $$(el).text().replace(/\s+/g," ").trim();
+        const t = $$(el).text().replace(/\s+/g, " ").trim();
         if (!t || t.length < 2) return;
         if (t.toLowerCase().includes("coming soon") || t.toLowerCase().includes("see all")) return;
 
@@ -348,7 +367,7 @@ async function parseCameo(listUrl, altUrls, filters) {
           details: "Coming soon. Details on website.",
           price: "Price not provided.",
           contact: `For more information call ${cameoMeta.phone}, email ${cameoMeta.email} or visit their website (${altUrls[1] || altUrls[0]}).`,
-          address: cameoMeta.address
+          address: cameoMeta.address,
         });
       });
     } catch (_) {}
@@ -377,16 +396,18 @@ export default async function handler(req, res) {
     const sources = JSON.parse(await fs.readFile(sourcesPath, "utf8"));
 
     let all = [];
-    const tasks = sources.map(async s => {
+    const tasks = sources.map(async (s) => {
       try {
         if (type === "movies" && s.type !== "movies") return [];
         if (type !== "movies" && s.type === "movies") return [];
+
         if (s.id === "donapa") return await parseDoNapa(s.listUrl, filters);
         if (s.id === "napa_library") return await parseNapaLibrary(s.listUrl, filters);
         if (s.id === "amcan_chamber") return await parseGrowthZone(s.listUrl, s.name, "american-canyon", filters);
         if (s.id === "calistoga_chamber") return await parseGrowthZone(s.listUrl, s.name, "calistoga", filters);
         if (s.id === "yountville_chamber") return await parseGrowthZone(s.listUrl, s.name, "yountville", filters);
         if (s.id === "cameo") return await parseCameo(s.listUrl, s.altUrls || [], filters);
+
         return [];
       } catch (_) {
         return [];
@@ -414,3 +435,4 @@ export default async function handler(req, res) {
     res.status(500).json({ ok: false, error: e.message || String(e) });
   }
 }
+

@@ -1,4 +1,4 @@
-# Napa Valley Event Finder (Squarespace Embed)
+# Napa Valley Event Finder (Embed Tool)
 
 ## Deploy (recommended: Vercel)
 1. Create a GitHub repo (ex: `napa-event-finder`) and upload these files.

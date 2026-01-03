@@ -17,10 +17,22 @@ function setCached(key, value) { cache.set(key, { t: Date.now(), v: value }); }
 function toISODate(d) { return d.toISOString().slice(0,10); }
 
 function parseISODate(s) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
-  if (!m) return null;
-  const dt = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
-  return isNaN(dt.getTime()) ? null : dt;
+  // Accept:
+  // - YYYY-MM-DD
+  // - MM/DD/YYYY or M/D/YYYY (some browsers may provide this)
+  const str = (s || "").trim();
+  let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
+  if (m) {
+    const dt = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str);
+  if (m) {
+    const mm = +m[1], dd = +m[2], yy = +m[3];
+    const dt = new Date(Date.UTC(yy, mm-1, dd));
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+  return null;
 }
 
 function normalizeTown(town) {

@@ -10,9 +10,7 @@ import * as cheerioNS from "cheerio";
  */
 
 // --- Robust cheerio loader ---
-const load =
-  cheerioNS.load ||
-  (cheerioNS.default && cheerioNS.default.load);
+const load = cheerioNS.load || (cheerioNS.default && cheerioNS.default.load);
 
 if (!load) {
   throw new Error("Cheerio 'load' not found. Check cheerio package version.");
@@ -60,9 +58,36 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload, null, 2));
 }
 
-// --- Text/date helpers ---
+// --- Entity decoding + Text/date helpers ---
+function decodeEntities(str) {
+  const s = String(str || "");
+
+  // numeric entities: &#8211; and hex: &#x2019;
+  const numeric = s
+    .replace(/&#(\d+);/g, (m, n) => {
+      const code = parseInt(n, 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => {
+      const code = parseInt(h, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+    });
+
+  // common named entities
+  const namedMap = {
+    "&amp;": "&",
+    "&quot;": '"',
+    "&apos;": "'",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&nbsp;": " ",
+  };
+
+  return numeric.replace(/&(amp|quot|apos|lt|gt|nbsp);/g, (m) => namedMap[m] ?? m);
+}
+
 function cleanText(s) {
-  return String(s || "").replace(/\s+/g, " ").trim();
+  return decodeEntities(String(s || "")).replace(/\s+/g, " ").trim();
 }
 
 function toISODate(d) {
@@ -81,7 +106,9 @@ function parseISODate(s) {
 
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str);
   if (m) {
-    const mm = +m[1], dd = +m[2], yy = +m[3];
+    const mm = +m[1],
+      dd = +m[2],
+      yy = +m[3];
     const dt = new Date(Date.UTC(yy, mm - 1, dd));
     return isNaN(dt.getTime()) ? null : dt;
   }
@@ -104,14 +131,16 @@ function withinRange(dateISO, startISO, endISO) {
 
 function titleCase(s) {
   if (!s) return s;
-  const small = new Set(["a","an","and","at","but","by","for","in","of","on","or","the","to","with"]);
+  const small = new Set(["a", "an", "and", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with"]);
   const parts = s.trim().split(/\s+/);
-  return parts.map((w,i)=>{
-    const clean = w.toLowerCase();
-    if (i>0 && small.has(clean)) return clean;
-    if (/^[A-Z0-9&]+$/.test(w)) return w;
-    return clean.charAt(0).toUpperCase() + clean.slice(1);
-  }).join(" ");
+  return parts
+    .map((w, i) => {
+      const clean = w.toLowerCase();
+      if (i > 0 && small.has(clean)) return clean;
+      if (/^[A-Z0-9&]+$/.test(w)) return w;
+      return clean.charAt(0).toUpperCase() + clean.slice(1);
+    })
+    .join(" ");
 }
 
 function isGenericTitle(t) {
@@ -123,10 +152,10 @@ function isGenericTitle(t) {
 function apDateFromYMD(ymd) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
   if (!m) return null;
-  const dt = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
   if (isNaN(dt.getTime())) return null;
-  const weekdays = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-  const months = ["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
+  const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const months = ["Jan.", "Feb.", "March", "April", "May", "June", "July", "Aug.", "Sept.", "Oct.", "Nov.", "Dec."];
   return `${weekdays[dt.getUTCDay()]}, ${months[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
 }
 
@@ -146,15 +175,26 @@ function apTimeFromISOClock(iso) {
 function formatTimeRange(startISO, endISO) {
   const t1 = apTimeFromISOClock(startISO);
   const t2 = apTimeFromISOClock(endISO);
+
   if (!t1 && !t2) return null;
   if (t1 && !t2) return t1;
   if (!t1 && t2) return t2;
 
+  // If identical times, show a single time (prevents "12 to 12 a.m.")
+  if (t1 === t2) return t1;
+
   const mer1 = t1.endsWith("a.m.") ? "a.m." : "p.m.";
   const mer2 = t2.endsWith("a.m.") ? "a.m." : "p.m.";
-  const t1NoMer = t1.replace(/\s(a\.m\.|p\.m\.)$/, "");
 
-  if (mer1 === mer2) return `${t1NoMer} to ${t2}`;
+  // Don't drop meridiem if the first hour is 12 (confusing otherwise)
+  const hour1 = parseInt((t1.match(/^(\d{1,2})/) || [])[1] || "0", 10);
+  const canDropMeridiem = mer1 === mer2 && hour1 !== 12;
+
+  if (canDropMeridiem) {
+    const t1NoMer = t1.replace(/\s(a\.m\.|p\.m\.)$/, "");
+    return `${t1NoMer} to ${t2}`;
+  }
+
   return `${t1} to ${t2}`;
 }
 
@@ -162,6 +202,25 @@ function truncate(s, max = 260) {
   const x = cleanText(s);
   if (x.length <= max) return x;
   return x.slice(0, max - 1).trimEnd() + "…";
+}
+
+function inferPriceFromText(text) {
+  const t = cleanText(text).toLowerCase();
+  if (!t) return null;
+
+  const freeSignals = [
+    "no cover",
+    "no cover charge",
+    "free admission",
+    "free entry",
+    "free to attend",
+    "admission is free",
+    "free event",
+    "no admission fee",
+    "complimentary",
+  ];
+
+  return freeSignals.some((x) => t.includes(x)) ? "Free." : null;
 }
 
 // --- Networking ---
@@ -273,7 +332,11 @@ async function extractEventFromPage(url, opts = {}) {
     if (loc && loc.address) address = extractStreetAddress(loc.address);
 
     const offers = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
-    if (offers && offers.price) price = `Tickets ${offers.price}.`;
+    if (offers && offers.price !== undefined && offers.price !== null) {
+      const p = String(offers.price).trim();
+      if (p === "0" || p === "0.00") price = "Free.";
+      else price = `Tickets ${p}.`;
+    }
   }
 
   if (!title) {
@@ -295,6 +358,12 @@ async function extractEventFromPage(url, opts = {}) {
   let details = "Details on website.";
   if (description) details = truncate(description);
   if (details && !details.endsWith(".")) details += ".";
+
+  // Infer price when page clearly says it's free/no cover
+  if (!price) {
+    const inferred = inferPriceFromText(description || details);
+    if (inferred) price = inferred;
+  }
 
   return {
     title: title || "Event",
@@ -346,7 +415,11 @@ async function parseDoNapa(listUrl, filters) {
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
     let u;
-    try { u = new URL(fullUrl); } catch { return; }
+    try {
+      u = new URL(fullUrl);
+    } catch {
+      return;
+    }
 
     if (!u.hostname.endsWith("donapa.com")) return;
     if (!u.pathname.startsWith("/event/")) return;
@@ -407,7 +480,11 @@ async function parseNapaLibrary(listUrl, filters) {
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
     let u;
-    try { u = new URL(fullUrl); } catch { return; }
+    try {
+      u = new URL(fullUrl);
+    } catch {
+      return;
+    }
 
     if (!u.hostname.includes("napalibrary.org")) return;
     if (!u.pathname.includes("/event")) return;
@@ -445,7 +522,11 @@ async function parseVisitNapaValley(listUrl, filters) {
 
     const fullUrl = href.startsWith("http") ? href : new URL(href, listUrl).toString();
     let u;
-    try { u = new URL(fullUrl); } catch { return; }
+    try {
+      u = new URL(fullUrl);
+    } catch {
+      return;
+    }
 
     if (!u.hostname.endsWith("visitnapavalley.com")) return;
     if (!u.pathname.startsWith("/event/")) return;

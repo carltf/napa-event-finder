@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Napa Event Map</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body, #map {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    fetch('https://napa-event-finder.vercel.app/api/search?town=napa&type=any')
+      .then(res => res.json())
+      .then(data => {
+        const map = L.map('map').setView([38.2975, -122.2869], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors',
+        }).addTo(map);
+
+        (data.map || []).forEach(p => {
+          if (p.lat && p.lon) {
+            L.marker([p.lat, p.lon])
+              .addTo(map)
+              .bindPopup(`<b>${p.name}</b>`);
+          }
+        });
+      })
+      .catch(err => console.error('Map fetch failed:', err));
+  </script>
+</body>
+</html>
+

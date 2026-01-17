@@ -287,19 +287,28 @@
       } catch (_) {}
     }
 
-    function render(results) {
-      const wrap = $("results");
-      wrap.innerHTML = "";
-      results.forEach(item => {
-        const div = document.createElement("div");
-        div.className = "card event";
-        div.innerHTML = `
-          <h3>${escapeHtml(item.header)}</h3>
-          <p>${escapeHtml(item.body)}</p>
-        `;
-        wrap.appendChild(div);
-      });
-    }
+function render(results) {
+  const wrap = $("results");
+  wrap.innerHTML = "";
+
+  results.forEach(item => {
+    const div = document.createElement("div");
+    div.className = "card event";
+
+    // Escape HTML but re-enable safe clickable URLs
+    let safeBody = escapeHtml(item.body);
+    safeBody = safeBody.replace(
+      /(https?:\/\/[^\s)]+)/g,
+      '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
+
+    div.innerHTML = `
+      <h3>${escapeHtml(item.header)}</h3>
+      <p>${safeBody}</p>
+    `;
+    wrap.appendChild(div);
+  });
+}
 
     async function search() {
       clearError();

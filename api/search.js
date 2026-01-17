@@ -147,7 +147,29 @@ async function fetchText(url) {
 
 // --- Weekender formatting ---
 function formatWeekender(e) {
-  ...
+  const header = titleCase(e.title || "Event");
+  const dateLine = e.when || "Date and time on website.";
+  const details = e.details || "Details on website.";
+  const price = e.price || "Price not provided.";
+  const contact = e.contact || (e.url
+    ? `For more information visit their website (${e.url}).`
+    : "For more information visit their website.");
+  let address = e.address || "Venue address not provided.";
+
+  if (address === "Venue address not provided." && e.town && e.town !== "all") {
+    address = `${titleCase(e.town.replace("-", " "))}, CA`;
+  }
+
+  const geoHints = {
+    napa: { lat: 38.2975, lon: -122.2869 },
+    "st-helena": { lat: 38.5056, lon: -122.4703 },
+    yountville: { lat: 38.3926, lon: -122.3631 },
+    calistoga: { lat: 38.578, lon: -122.5797 },
+    "american-canyon": { lat: 38.1686, lon: -122.2608 },
+  };
+
+  const geo = geoHints[(e.town || "").toLowerCase()] || null;
+
   return {
     header,
     body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim(),
@@ -508,6 +530,26 @@ async function parseCameo(listUrl, alt, f) {
   }
 
   return filterAndRank(events, f);
+}
+
+// --------------------------------------------------
+// Filter and Rank Helper (required by all parsers)
+// --------------------------------------------------
+function filterAndRank(events, f = {}) {
+  const out = [];
+  for (const e of events) {
+    if (!e || !e.dateISO) continue;
+    if (!withinRange(e.dateISO, f.startISO, f.endISO)) continue;
+    if (f.town && f.town !== "all" && e.town && e.town !== f.town) continue;
+    if (f.type && f.type !== "any" && e.tag && e.tag !== f.type) continue;
+    out.push(e);
+  }
+
+  // Sort newest to oldest by dateISO
+  out.sort((a, b) => (a.dateISO < b.dateISO ? 1 : -1));
+
+  // Convert to Weekender-style format
+  return out.map(formatWeekender);
 }
 
 // --------------------------------------------------

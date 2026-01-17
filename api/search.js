@@ -2,14 +2,15 @@ import * as cheerioNS from "cheerio";
 
 /**
  * Napa Valley Event Finder — API (Vercel)
- * Updated Jan 2026
+ * Updated Jan 2026 (geo + timeout stable)
  * ---------------------------------------------------------
  * Full build with:
- *  • Per-fetch timeout (8 s)
- *  • Global handler timeout (20 s)
+ *  • Per-fetch timeout (12 s)
+ *  • Global handler timeout (25 s)
  *  • Partial-result recovery + metadata flags
  *  • Address fallback for Weekender map rendering
  *  • Full set of parsers + caching
+ *  • Geo hints for Concierge map rendering
  */
 
 // --- Robust cheerio loader ---
@@ -22,15 +23,18 @@ const cache = globalThis.__NVF_CACHE__ || (globalThis.__NVF_CACHE__ = new Map())
 function getCached(k) {
   const hit = cache.get(k);
   if (!hit) return null;
-  if (Date.now() - hit.t > CACHE_TTL_MS) return cache.delete(k), null;
+  if (Date.now() - hit.t > CACHE_TTL_MS) {
+    cache.delete(k);
+    return null;
+  }
   return hit.v;
 }
 function setCached(k, v) {
   cache.set(k, { t: Date.now(), v });
 }
 
-// --- Timeout helper (15 s for all sources) ---
-const FETCH_TIMEOUT_MS = 15000;
+// --- Timeout helper (25 s global / 12 s fetch) ---
+const FETCH_TIMEOUT_MS = 12000;
 async function withTimeout(promise, ms = FETCH_TIMEOUT_MS) {
   return Promise.race([
     promise,
@@ -143,28 +147,7 @@ async function fetchText(url) {
 
 // --- Weekender formatting ---
 function formatWeekender(e) {
-  const header = titleCase(e.title || "Event");
-  const dateLine = e.when || "Date and time on website.";
-  const details = e.details || "Details on website.";
-  const price = e.price || "Price not provided.";
-  const contact = e.contact || (e.url
-    ? `For more information visit their website (${e.url}).`
-    : "For more information visit their website.");
-  let address = e.address || "Venue address not provided.";
-  if (address === "Venue address not provided." && e.town && e.town !== "all") {
-    address = `${titleCase(e.town.replace("-", " "))}, CA`;
-  }
-
-  // --- new geo hint map ---
-  const geoHints = {
-    napa: { lat: 38.2975, lon: -122.2869 },
-    "st-helena": { lat: 38.5056, lon: -122.4703 },
-    yountville: { lat: 38.3926, lon: -122.3631 },
-    calistoga: { lat: 38.578, lon: -122.5797 },
-    "american-canyon": { lat: 38.1686, lon: -122.2608 },
-  };
-  const geo = geoHints[(e.town || "").toLowerCase()] || null;
-
+  ...
   return {
     header,
     body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim(),
@@ -172,10 +155,360 @@ function formatWeekender(e) {
   };
 }
 
-// --- JSON-LD extraction + parsers (full from your version) ---
-/* keep all your extractEventFromPage, extractOrFallback,
-   parseDoNapa, parseGrowthZone, parseNapaLibrary,
-   parseVisitNapaValley, and parseCameo exactly as in your file */
+// ✅ Place these 4 extraction functions right HERE — before the parser section
+
+function getJsonLdEvents($) {
+  const out = [];
+  $("script[type='application/ld+json']").each((_, el) => {
+    try {
+      const data = JSON.parse($(el).text() || "{}");
+      const arr = Array.isArray(data) ? data : [data];
+      for (const x of arr) {
+        if (x["@type"] === "Event") out.push(x);
+        if (Array.isArray(x["@graph"]))
+          for (const g of x["@graph"])
+            if (g["@type"] === "Event") out.push(g);
+      }
+    } catch {}
+  });
+  return out;
+}
+
+function extractStreetAddress(addr) {
+  if (!addr) return null;
+  if (typeof addr === "string") return null;
+  const s = cleanText(addr.streetAddress);
+  return s ? s + "." : null;
+}
+
+async function extractEventFromPage(url, opts = {}) {
+  const html = await fetchText(url);
+  const $ = load(html);
+  let title = null, startISO = null, endISO = null, address = null, description = null, price = null;
+  let geo = null;
+
+  const ld = getJsonLdEvents($);
+  const ev = ld[0];
+  if (ev) {
+    title = ev.name || null;
+    startISO = ev.startDate || null;
+    endISO = ev.endDate || null;
+    description = ev.description || null;
+    const loc = Array.isArray(ev.location) ? ev.location[0] : ev.location;
+    if (loc && loc.address) address = extractStreetAddress(loc.address);
+    const offers = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
+    if (offers && offers.price !== undefined && offers.price !== null) {
+      const p = String(offers.price).trim();
+      if (p === "0" || p === "0.00") price = "Free."; 
+      else price = `Tickets ${p}.`;
+    }
+  }
+
+  if (!title)
+    title = cleanText($("h1").first().text()) || cleanText($("title").text());
+
+  let dateISO = null, when = null;
+  const ymd = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "");
+  if (ymd) {
+    dateISO = ymd[1];
+    const ap = apDateFromYMD(dateISO);
+    const t = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
+    when = ap ? (t ? `${ap}, ${t}` : ap) : null;
+  }
+
+  let details = description ? truncate(description) : "Details on website.";
+  if (details && !details.endsWith(".")) details += ".";
+  if (!price) {
+    const inf = inferPriceFromText(description || details);
+    if (inf) price = inf;
+  }
+
+  // --- Geo assignment fallback ---
+  if (!opts.skipGeo && !geo && opts.town) {
+    const geoHints = {
+      napa: { lat: 38.2975, lon: -122.2869 },
+      "st-helena": { lat: 38.5056, lon: -122.4703 },
+      yountville: { lat: 38.3926, lon: -122.3631 },
+      calistoga: { lat: 38.578, lon: -122.5797 },
+      "american-canyon": { lat: 38.1686, lon: -122.2608 },
+    };
+    geo = geoHints[opts.town.toLowerCase()] || null;
+  }
+
+  return {
+    title: title || "Event",
+    url,
+    dateISO,
+    when: when || "Date and time on website.",
+    details,
+    price: price || "Price not provided.",
+    contact: `For more information visit their website (${url}).`,
+    address: address || "Venue address not provided.",
+    town: opts.town || "all",
+    tag: opts.tag || "any",
+    geo,
+  };
+}
+
+async function extractOrFallback(url, title, opts = {}) {
+  try {
+    const ev = await extractEventFromPage(url, opts);
+    if (isGenericTitle(ev.title) && title) ev.title = title;
+    if (isGenericTitle(ev.title)) return null;
+    return ev;
+  } catch {
+    if (!title || isGenericTitle(title)) return null;
+
+    // --- Geo assignment fallback ---
+    let geo = null;
+    if (!opts.skipGeo && opts.town) {
+      const geoHints = {
+        napa: { lat: 38.2975, lon: -122.2869 },
+        "st-helena": { lat: 38.5056, lon: -122.4703 },
+        yountville: { lat: 38.3926, lon: -122.3631 },
+        calistoga: { lat: 38.578, lon: -122.5797 },
+        "american-canyon": { lat: 38.1686, lon: -122.2608 },
+      };
+      geo = geoHints[opts.town.toLowerCase()] || null;
+    }
+
+    return {
+      title,
+      url,
+      dateISO: null,
+      when: "Date and time on website.",
+      details: "Details on website.",
+      price: "Price not provided.",
+      contact: `For more information visit their website (${url}).`,
+      address: "Venue address not provided.",
+      town: opts.town || "all",
+      tag: opts.tag || "any",
+      geo,
+    };
+  }
+}
+
+/* --------------------------------------------------
+   PARSERS (with Geo Hint Integration)
+-------------------------------------------------- */
+
+async function parseDoNapa(listUrl, f) {
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+
+  const urls = new Set();
+  $("a[href*='/event/']").each((_, a) => {
+    const href = $(a).attr("href") || "";
+    if (!href) return;
+    const full = href.startsWith("http") ? href : new URL(href, listUrl).toString();
+    if (full.includes("donapa.com/event/")) urls.add(full);
+  });
+
+  const events = [];
+  for (const url of Array.from(urls).slice(0, 10)) {
+    const ev = await extractOrFallback(url, null, { town: "napa", tag: "any" });
+
+    // --- Geo assignment for Concierge map rendering ---
+    if (ev && !ev.geo) {
+      const geoHints = {
+        napa: { lat: 38.2975, lon: -122.2869 },
+        "st-helena": { lat: 38.5056, lon: -122.4703 },
+        yountville: { lat: 38.3926, lon: -122.3631 },
+        calistoga: { lat: 38.578, lon: -122.5797 },
+        "american-canyon": { lat: 38.1686, lon: -122.2608 },
+      };
+      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
+    }
+
+    if (ev) events.push(ev);
+  }
+
+  return filterAndRank(events, f);
+}
+
+async function parseGrowthZone(listUrl, source, townSlug, f) {
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+
+  const links = [];
+  $("a[href*='/events/details/']").each((_, a) => {
+    const href = $(a).attr("href") || "";
+    const t = cleanText($(a).text());
+    if (!href) return;
+    const full = href.startsWith("http") ? href : new URL(href, listUrl).toString();
+    links.push({ url: full, title: t });
+  });
+
+  const uniq = [];
+  const seen = new Set();
+  for (const l of links) {
+    if (!l.url || seen.has(l.url)) continue;
+    seen.add(l.url);
+    uniq.push(l);
+    if (uniq.length >= 10) break;
+  }
+
+  const events = [];
+  for (const x of uniq) {
+    const ev = await extractOrFallback(x.url, x.title, { town: townSlug, tag: "any" });
+
+    // --- Geo assignment ---
+    if (ev && !ev.geo) {
+      const geoHints = {
+        napa: { lat: 38.2975, lon: -122.2869 },
+        "st-helena": { lat: 38.5056, lon: -122.4703 },
+        yountville: { lat: 38.3926, lon: -122.3631 },
+        calistoga: { lat: 38.578, lon: -122.5797 },
+        "american-canyon": { lat: 38.1686, lon: -122.2608 },
+      };
+      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
+    }
+
+    if (ev) events.push(ev);
+  }
+
+  return filterAndRank(events, f);
+}
+
+async function parseNapaLibrary(listUrl, f) {
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+
+  const links = [];
+  $("a[href*='/event']").each((_, a) => {
+    const href = $(a).attr("href") || "";
+    const t = cleanText($(a).text());
+    if (!href) return;
+    const full = href.startsWith("http") ? href : new URL(href, listUrl).toString();
+    if (full.includes("napalibrary.org")) links.push({ url: full, title: t });
+  });
+
+  const uniq = [];
+  const seen = new Set();
+  for (const l of links) {
+    if (!l.url || seen.has(l.url)) continue;
+    seen.add(l.url);
+    uniq.push(l);
+    if (uniq.length >= 10) break;
+  }
+
+  const events = [];
+  for (const x of uniq) {
+    const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
+
+    // --- Geo assignment ---
+    if (ev && !ev.geo) {
+      const geoHints = {
+        napa: { lat: 38.2975, lon: -122.2869 },
+        "st-helena": { lat: 38.5056, lon: -122.4703 },
+        yountville: { lat: 38.3926, lon: -122.3631 },
+        calistoga: { lat: 38.578, lon: -122.5797 },
+        "american-canyon": { lat: 38.1686, lon: -122.2608 },
+      };
+      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
+    }
+
+    if (ev) events.push(ev);
+  }
+
+  return filterAndRank(events, f);
+}
+
+async function parseVisitNapaValley(listUrl, f) {
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+
+  const links = [];
+  $("a[href*='/event/']").each((_, a) => {
+    const href = $(a).attr("href") || "";
+    const t = cleanText($(a).text());
+    if (!href) return;
+    const full = href.startsWith("http") ? href : new URL(href, listUrl).toString();
+    if (full.includes("visitnapavalley.com")) links.push({ url: full, title: t });
+  });
+
+  const uniq = [];
+  const seen = new Set();
+  for (const l of links) {
+    if (!l.url || seen.has(l.url)) continue;
+    seen.add(l.url);
+    uniq.push(l);
+    if (uniq.length >= 10) break;
+  }
+
+  const events = [];
+  for (const x of uniq) {
+    const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
+
+    // --- Geo assignment ---
+    if (ev && !ev.geo) {
+      const geoHints = {
+        napa: { lat: 38.2975, lon: -122.2869 },
+        "st-helena": { lat: 38.5056, lon: -122.4703 },
+        yountville: { lat: 38.3926, lon: -122.3631 },
+        calistoga: { lat: 38.578, lon: -122.5797 },
+        "american-canyon": { lat: 38.1686, lon: -122.2608 },
+      };
+      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
+    }
+
+    if (ev) events.push(ev);
+  }
+
+  return filterAndRank(events, f);
+}
+
+async function parseCameo(listUrl, alt, f) {
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+
+  const titles = [];
+  $("h2,h3").each((_, el) => {
+    const t = cleanText($(el).text());
+    if (t && t.length > 2 && t.length < 80) titles.push(t);
+  });
+
+  const today = toISODate(new Date());
+  const meta = {
+    address: "1340 Main St., St. Helena.",
+    phone: "707-963-9779",
+    email: "info@cameocinema.com",
+  };
+
+  const events = [];
+  for (const t of titles.slice(0, 8)) {
+    if (isGenericTitle(t) || /cameo|movie times/i.test(t)) continue;
+
+    const ev = {
+      title: t,
+      url: listUrl,
+      dateISO: today,
+      when: apDateFromYMD(today) || "Date and time on website.",
+      details: "Now playing. Showtimes on website.",
+      price: "Price not provided.",
+      contact: `For more information call ${meta.phone}, email ${meta.email} or visit their website (${listUrl}).`,
+      address: meta.address,
+      town: "st-helena",
+      tag: "movies",
+    };
+
+    // --- Geo assignment ---
+    if (!ev.geo) {
+      const geoHints = {
+        napa: { lat: 38.2975, lon: -122.2869 },
+        "st-helena": { lat: 38.5056, lon: -122.4703 },
+        yountville: { lat: 38.3926, lon: -122.3631 },
+        calistoga: { lat: 38.578, lon: -122.5797 },
+        "american-canyon": { lat: 38.1686, lon: -122.2608 },
+      };
+      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
+    }
+
+    events.push(ev);
+  }
+
+  return filterAndRank(events, f);
+}
 
 // --------------------------------------------------
 // Handler

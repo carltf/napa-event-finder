@@ -142,29 +142,50 @@ async function fetchText(url) {
 }
 
 // --- Weekender formatting ---
-function formatWeekender(e){
-  const header=titleCase(e.title||"Event");
-  const dateLine=e.when||"Date and time on website.";
-  const details=e.details||"Details on website.";
-  const price=e.price||"Price not provided.";
-  const contact=e.contact||(e.url?`For more information visit their website (${e.url}).`:"For more information visit their website.");
-  let address=e.address||"Venue address not provided.";
-  if(address==="Venue address not provided."&&e.town&&e.town!=="all"){
-    address=`${titleCase(e.town.replace("-", " "))}, CA`;
+function formatWeekender(e) {
+  const header = titleCase(e.title || "Event");
+  const dateLine = e.when || "Date and time on website.";
+  const details = e.details || "Details on website.";
+  const price = e.price || "Price not provided.";
+  const contact = e.contact || (e.url
+    ? `For more information visit their website (${e.url}).`
+    : "For more information visit their website.");
+  let address = e.address || "Venue address not provided.";
+  if (address === "Venue address not provided." && e.town && e.town !== "all") {
+    address = `${titleCase(e.town.replace("-", " "))}, CA`;
   }
-  return { header, body:`${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g," ").trim() };
+
+  // --- new geo hint map ---
+  const geoHints = {
+    napa: { lat: 38.2975, lon: -122.2869 },
+    "st-helena": { lat: 38.5056, lon: -122.4703 },
+    yountville: { lat: 38.3926, lon: -122.3631 },
+    calistoga: { lat: 38.578, lon: -122.5797 },
+    "american-canyon": { lat: 38.1686, lon: -122.2608 },
+  };
+  const geo = geoHints[(e.town || "").toLowerCase()] || null;
+
+  return {
+    header,
+    body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim(),
+    geo,
+  };
 }
 
-function filterAndRank(events, f){
-  const town=normalizeTown(f.town), type=(f.type||"any").toLowerCase();
-  let out=events.filter(e=>{
-    const t=(e.town||"all").toLowerCase();
-    return (town==="all"||t===town)&&
-           (type==="any"||e.tag===type||(e.tags&&e.tags.includes(type)))&&
-           withinRange(e.dateISO,f.startISO,f.endISO);
+// --- Add fallback venues & map metadata when few results ---
+if (dedup.length < 3) {
+  dedup.push({
+    header: "Performance & Art Venues (for other nights)",
+    body:
+      "If you’d like more art or performance options on future dates, visit Napa Valley Performing Arts Center (Yountville), Lucky Penny Productions (Napa), Lincoln Theater (Yountville), Uptown Theatre (Napa), or Cameo Cinema (St. Helena).",
+    mapHint: [
+      { name: "Uptown Theatre Napa", lat: 38.2991, lon: -122.2858 },
+      { name: "Lincoln Theater", lat: 38.3926, lon: -122.3631 },
+      { name: "Lucky Penny Productions", lat: 38.2979, lon: -122.2864 },
+      { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
+      { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
+    ],
   });
-  out.sort((a,b)=>a.dateISO&&b.dateISO?a.dateISO.localeCompare(b.dateISO):0);
-  return out.map(formatWeekender);
 }
 
 // --- JSON-LD extraction + parsers (full from your version) ---

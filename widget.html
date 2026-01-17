@@ -8,22 +8,22 @@
   </style>
 </head>
 <body>
-  <script>
-    fetch("https://napa-event-finder.vercel.app/api/search?town=napa&limit=5")
-      .then(r => r.json())
-      .then(data => {
-        const container = document.createElement("div");
-        data.results.forEach(ev => {
-          const item = document.createElement("p");
-          item.textContent = `${ev.header} — ${ev.body}`;
-          container.appendChild(item);
-        });
-        document.body.appendChild(container);
-      })
-      .catch(err => {
-        document.body.innerHTML = "Error loading events.";
-        console.error(err);
-      });
-  </script>
+<script>
+fetch("/api/search?town=napa&limit=5")
+  .then(r => r.json())
+  .then(data => {
+    const container = document.createElement("div");
+    data.results.forEach(ev => {
+      const item = document.createElement("p");
+      item.textContent = `${ev.header} — ${ev.body}`;
+      container.appendChild(item);
+    });
+    document.body.appendChild(container);
+  })
+  .catch(err => {
+    document.body.innerHTML = "Error loading events.";
+    console.error(err);
+  });
+</script>
 </body>
 </html>

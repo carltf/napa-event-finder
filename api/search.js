@@ -172,22 +172,6 @@ function formatWeekender(e) {
   };
 }
 
-// --- Add fallback venues & map metadata when few results ---
-if (dedup.length < 3) {
-  dedup.push({
-    header: "Performance & Art Venues (for other nights)",
-    body:
-      "If you’d like more art or performance options on future dates, visit Napa Valley Performing Arts Center (Yountville), Lucky Penny Productions (Napa), Lincoln Theater (Yountville), Uptown Theatre (Napa), or Cameo Cinema (St. Helena).",
-    mapHint: [
-      { name: "Uptown Theatre Napa", lat: 38.2991, lon: -122.2858 },
-      { name: "Lincoln Theater", lat: 38.3926, lon: -122.3631 },
-      { name: "Lucky Penny Productions", lat: 38.2979, lon: -122.2864 },
-      { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
-      { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
-    ],
-  });
-}
-
 // --- JSON-LD extraction + parsers (full from your version) ---
 /* keep all your extractEventFromPage, extractOrFallback,
    parseDoNapa, parseGrowthZone, parseNapaLibrary,
@@ -247,16 +231,34 @@ export default async function handler(req,res){
       seen.add(k); dedup.push(x);
     }
 
-    const allFailed=dedup.length===0;
-    if(dedup.length<3) console.warn(`Only ${dedup.length} verified events — supplement via web.`);
+        const allFailed = dedup.length === 0;
+    if (dedup.length < 3)
+      console.warn(`Only ${dedup.length} verified events — supplement via web.`);
+
+    // --- Add fallback venues & map metadata when few results ---
+    if (dedup.length < 3) {
+      dedup.push({
+        header: "Performance & Art Venues (for other nights)",
+        body:
+          "If you’d like more art or performance options on future dates, visit Napa Valley Performing Arts Center (Yountville), Lucky Penny Productions (Napa), Lincoln Theater (Yountville), Uptown Theatre (Napa), or Cameo Cinema (St. Helena).",
+        mapHint: [
+          { name: "Uptown Theatre Napa", lat: 38.2991, lon: -122.2858 },
+          { name: "Lincoln Theater", lat: 38.3926, lon: -122.3631 },
+          { name: "Lucky Penny Productions", lat: 38.2979, lon: -122.2864 },
+          { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
+          { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
+        ],
+      });
+    }
+
     clearTimeout(hardTimeout);
 
-    sendJson(res,200,{
-      ok:!allFailed,
-      timeout:allFailed,
-      supplemented:dedup.length<3,
-      count:dedup.slice(0,limit).length,
-      results:dedup.slice(0,limit)
+    sendJson(res, 200, {
+      ok: !allFailed,
+      timeout: allFailed,
+      supplemented: dedup.length < 3,
+      count: dedup.slice(0, limit).length,
+      results: dedup.slice(0, limit),
     });
 
   }catch(e){

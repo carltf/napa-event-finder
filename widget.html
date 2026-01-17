@@ -1,77 +1,115 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Napa Event Finder Widget</title>
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <meta charset="utf-8" />
+  <title>Napa Valley Event Finder</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 1.5rem;
+      color: #222;
+      background: #fff;
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+    }
+    form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    select, input[type="date"], button {
+      padding: 0.5rem;
+      font-size: 0.95rem;
+    }
+    button {
+      background: #111;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      border-radius: 0.25rem;
+      padding: 0.5rem 1rem;
+    }
+    button:hover { background: #333; }
+    #results { margin-top: 1rem; line-height: 1.4; }
+    .event {
+      border-bottom: 1px solid #ddd;
+      padding: 0.5rem 0;
+    }
+    .header { font-weight: 600; }
+    .body { margin-top: 0.25rem; color: #555; }
+    small { color: #777; }
+  </style>
 </head>
-<body class="bg-gray-50 text-gray-900 font-sans">
-  <div class="max-w-4xl mx-auto p-6">
-    <h1 class="text-2xl font-bold mb-4">Napa Valley Event Finder</h1>
+<body>
+  <h1>Napa Valley Event Finder</h1>
 
-    <div class="flex flex-wrap gap-3 mb-4">
-      <select id="town" class="border rounded p-2">
-        <option value="all">All Napa County</option>
-        <option value="napa">Napa</option>
-        <option value="yountville">Yountville</option>
-        <option value="st-helena">St. Helena</option>
-        <option value="calistoga">Calistoga</option>
-        <option value="american-canyon">American Canyon</option>
-      </select>
+  <form id="searchForm">
+    <select id="town">
+      <option value="all">All Napa County</option>
+      <option value="napa">Napa</option>
+      <option value="yountville">Yountville</option>
+      <option value="st-helena">St. Helena</option>
+      <option value="calistoga">Calistoga</option>
+      <option value="american-canyon">American Canyon</option>
+    </select>
 
-      <select id="type" class="border rounded p-2">
-        <option value="any">Any event</option>
-        <option value="movies">Movies</option>
-      </select>
+    <select id="type">
+      <option value="any">Any event</option>
+      <option value="movies">Movies</option>
+    </select>
 
-      <input id="start" type="date" class="border rounded p-2" />
-      <input id="end" type="date" class="border rounded p-2" />
-      <button id="search" class="bg-blue-600 text-white px-4 py-2 rounded">Search</button>
-    </div>
+    <input type="date" id="start" />
+    <input type="date" id="end" />
+    <button type="submit">Search</button>
+  </form>
 
-    <div id="results" class="space-y-4"></div>
-  </div>
+  <small>Returns up to 5 results in Weekender-style formatting.</small>
+  <div id="results"></div>
 
   <script>
-    async function fetchEvents() {
-      const town = document.getElementById('town').value;
-      const type = document.getElementById('type').value;
-      const start = document.getElementById('start').value;
-      const end = document.getElementById('end').value;
-      const resultsDiv = document.getElementById('results');
-
-      resultsDiv.innerHTML = '<p class="text-gray-500">Loading events...</p>';
-
-      try {
-        const res = await axios.get(`https://napa-event-finder.vercel.app/api/search`, {
-          params: { town, type, start, end }
-        });
-
-        if (!res.data.ok || res.data.count === 0) {
-          resultsDiv.innerHTML = '<p>No events found for your search.</p>';
-          return;
-        }
-
-        resultsDiv.innerHTML = res.data.results.map(e => `
-          <div class="bg-white shadow rounded p-4">
-            <h2 class="font-semibold text-lg">${e.header}</h2>
-            <p class="text-sm text-gray-700">${e.body}</p>
-          </div>
-        `).join('');
-      } catch (err) {
-        resultsDiv.innerHTML = `<p class="text-red-500">Error loading events: ${err.message}</p>`;
-      }
+    async function fetchEvents(params) {
+      const q = new URLSearchParams(params).toString();
+      const res = await fetch(`/api/search?${q}`);
+      if (!res.ok) throw new Error("Fetch failed");
+      return res.json();
     }
 
-    document.getElementById('search').addEventListener('click', fetchEvents);
+    const form = document.getElementById("searchForm");
+    const resultsDiv = document.getElementById("results");
 
-    // Auto-load defaults for today
-    const today = new Date().toISOString().split('T')[0];
-    document.getElementById('start').value = today;
-    document.getElementById('end').value = today;
-    fetchEvents();
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      resultsDiv.textContent = "Loading events…";
+      const params = {
+        town: form.town.value,
+        type: form.type.value,
+        start: form.start.value,
+        end: form.end.value,
+        limit: 5
+      };
+
+      try {
+        const data = await fetchEvents(params);
+        if (!data || !data.results || !data.results.length) {
+          resultsDiv.textContent = "No events found for that range.";
+          return;
+        }
+        resultsDiv.innerHTML = data.results.map(ev => `
+          <div class="event">
+            <div class="header">${ev.header}</div>
+            <div class="body">${ev.body}</div>
+          </div>
+        `).join("");
+      } catch (err) {
+        console.error(err);
+        resultsDiv.textContent = "Error loading events.";
+      }
+    });
   </script>
 </body>
 </html>

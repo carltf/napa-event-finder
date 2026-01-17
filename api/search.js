@@ -123,7 +123,7 @@ async function fetchText(url) {
   if (cached) return cached;
 
   const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), 8000); // 8-second fetch cap
+  const id = setTimeout(() => controller.abort(), 8000);
 
   try {
     const res = await fetch(url, {
@@ -133,7 +133,6 @@ async function fetchText(url) {
       },
       signal: controller.signal,
     });
-
     clearTimeout(id);
     if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
     const txt = await res.text();
@@ -147,7 +146,27 @@ async function fetchText(url) {
 
 // --- Weekender formatting ---
 function formatWeekender(e) {
-  ...
+  const header = titleCase(e.title || "Event");
+  const dateLine = e.when || "Date and time on website.";
+  const details = e.details || "Details on website.";
+  const price = e.price || "Price not provided.";
+  const contact = e.contact || (e.url
+    ? `For more information visit their website (${e.url}).`
+    : "For more information visit their website.");
+  let address = e.address || "Venue address not provided.";
+  if (address === "Venue address not provided." && e.town && e.town !== "all") {
+    address = `${titleCase(e.town.replace("-", " "))}, CA`;
+  }
+
+  const geoHints = {
+    napa: { lat: 38.2975, lon: -122.2869 },
+    "st-helena": { lat: 38.5056, lon: -122.4703 },
+    yountville: { lat: 38.3926, lon: -122.3631 },
+    calistoga: { lat: 38.578, lon: -122.5797 },
+    "american-canyon": { lat: 38.1686, lon: -122.2608 },
+  };
+  const geo = geoHints[(e.town || "").toLowerCase()] || null;
+
   return {
     header,
     body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim(),
@@ -155,8 +174,9 @@ function formatWeekender(e) {
   };
 }
 
-// ✅ Place these 4 extraction functions right HERE — before the parser section
-
+// --------------------------------------------------
+// Event Extraction Utilities
+// --------------------------------------------------
 function getJsonLdEvents($) {
   const out = [];
   $("script[type='application/ld+json']").each((_, el) => {
@@ -199,7 +219,7 @@ async function extractEventFromPage(url, opts = {}) {
     const offers = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
     if (offers && offers.price !== undefined && offers.price !== null) {
       const p = String(offers.price).trim();
-      if (p === "0" || p === "0.00") price = "Free."; 
+      if (p === "0" || p === "0.00") price = "Free.";
       else price = `Tickets ${p}.`;
     }
   }
@@ -223,7 +243,6 @@ async function extractEventFromPage(url, opts = {}) {
     if (inf) price = inf;
   }
 
-  // --- Geo assignment fallback ---
   if (!opts.skipGeo && !geo && opts.town) {
     const geoHints = {
       napa: { lat: 38.2975, lon: -122.2869 },
@@ -258,8 +277,6 @@ async function extractOrFallback(url, title, opts = {}) {
     return ev;
   } catch {
     if (!title || isGenericTitle(title)) return null;
-
-    // --- Geo assignment fallback ---
     let geo = null;
     if (!opts.skipGeo && opts.town) {
       const geoHints = {
@@ -271,7 +288,6 @@ async function extractOrFallback(url, title, opts = {}) {
       };
       geo = geoHints[opts.town.toLowerCase()] || null;
     }
-
     return {
       title,
       url,
@@ -307,8 +323,6 @@ async function parseDoNapa(listUrl, f) {
   const events = [];
   for (const url of Array.from(urls).slice(0, 10)) {
     const ev = await extractOrFallback(url, null, { town: "napa", tag: "any" });
-
-    // --- Geo assignment for Concierge map rendering ---
     if (ev && !ev.geo) {
       const geoHints = {
         napa: { lat: 38.2975, lon: -122.2869 },
@@ -319,7 +333,6 @@ async function parseDoNapa(listUrl, f) {
       };
       ev.geo = geoHints[ev.town?.toLowerCase()] || null;
     }
-
     if (ev) events.push(ev);
   }
 
@@ -351,8 +364,6 @@ async function parseGrowthZone(listUrl, source, townSlug, f) {
   const events = [];
   for (const x of uniq) {
     const ev = await extractOrFallback(x.url, x.title, { town: townSlug, tag: "any" });
-
-    // --- Geo assignment ---
     if (ev && !ev.geo) {
       const geoHints = {
         napa: { lat: 38.2975, lon: -122.2869 },
@@ -363,7 +374,6 @@ async function parseGrowthZone(listUrl, source, townSlug, f) {
       };
       ev.geo = geoHints[ev.town?.toLowerCase()] || null;
     }
-
     if (ev) events.push(ev);
   }
 
@@ -395,8 +405,6 @@ async function parseNapaLibrary(listUrl, f) {
   const events = [];
   for (const x of uniq) {
     const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
-
-    // --- Geo assignment ---
     if (ev && !ev.geo) {
       const geoHints = {
         napa: { lat: 38.2975, lon: -122.2869 },
@@ -407,7 +415,6 @@ async function parseNapaLibrary(listUrl, f) {
       };
       ev.geo = geoHints[ev.town?.toLowerCase()] || null;
     }
-
     if (ev) events.push(ev);
   }
 
@@ -439,8 +446,6 @@ async function parseVisitNapaValley(listUrl, f) {
   const events = [];
   for (const x of uniq) {
     const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
-
-    // --- Geo assignment ---
     if (ev && !ev.geo) {
       const geoHints = {
         napa: { lat: 38.2975, lon: -122.2869 },
@@ -451,7 +456,6 @@ async function parseVisitNapaValley(listUrl, f) {
       };
       ev.geo = geoHints[ev.town?.toLowerCase()] || null;
     }
-
     if (ev) events.push(ev);
   }
 
@@ -478,7 +482,6 @@ async function parseCameo(listUrl, alt, f) {
   const events = [];
   for (const t of titles.slice(0, 8)) {
     if (isGenericTitle(t) || /cameo|movie times/i.test(t)) continue;
-
     const ev = {
       title: t,
       url: listUrl,
@@ -491,8 +494,6 @@ async function parseCameo(listUrl, alt, f) {
       town: "st-helena",
       tag: "movies",
     };
-
-    // --- Geo assignment ---
     if (!ev.geo) {
       const geoHints = {
         napa: { lat: 38.2975, lon: -122.2869 },
@@ -503,14 +504,17 @@ async function parseCameo(listUrl, alt, f) {
       };
       ev.geo = geoHints[ev.town?.toLowerCase()] || null;
     }
-
     events.push(ev);
   }
 
   return filterAndRank(events, f);
+}
+
+// --------------------------------------------------
+// Filter and Rank Helper
+// --------------------------------------------------
 function filterAndRank(events, f = {}) {
   const out = [];
-
   for (const e of events) {
     if (!e || !e.dateISO) continue;
     if (!withinRange(e.dateISO, f.startISO, f.endISO)) continue;
@@ -518,19 +522,14 @@ function filterAndRank(events, f = {}) {
     if (f.type && f.type !== "any" && e.tag && e.tag !== f.type) continue;
     out.push(e);
   }
-
-  // Sort by date (most recent first)
   out.sort((a, b) => (a.dateISO < b.dateISO ? 1 : -1));
-
-  // Convert to Weekender-style format
   return out.map(formatWeekender);
 }
 
 // --------------------------------------------------
 // Handler
 // --------------------------------------------------
-export default async function handler(req,res){
-  // fail-safe: force response after 20 s
+export default async function handler(req, res) {
   const hardTimeout = setTimeout(() => {
     try {
       if (!res.writableEnded) {
@@ -540,84 +539,91 @@ export default async function handler(req,res){
     } catch {}
   }, 20000);
 
-  try{
-    const u=new URL(typeof req.url==="string"?req.url:"/api/search","http://localhost");
-    const town=u.searchParams.get("town")||"all";
-    const type=u.searchParams.get("type")||"any";
-    const start=parseISODate(u.searchParams.get("start")||"");
-    const end=parseISODate(u.searchParams.get("end")||"");
-    const limit=Math.min(10,Math.max(1,parseInt(u.searchParams.get("limit")||"5",10)));
-    const filters={town,type,startISO:start?toISODate(start):null,endISO:end?toISODate(end):null};
+  try {
+    const u = new URL(typeof req.url === "string" ? req.url : "/api/search", "http://localhost");
+    const town = u.searchParams.get("town") || "all";
+    const type = u.searchParams.get("type") || "any";
+    const start = parseISODate(u.searchParams.get("start") || "");
+    const end = parseISODate(u.searchParams.get("end") || "");
+    const limit = Math.min(10, Math.max(1, parseInt(u.searchParams.get("limit") || "5", 10)));
+    const filters = {
+      town,
+      type,
+      startISO: start ? toISODate(start) : null,
+      endISO: end ? toISODate(end) : null,
+    };
 
-    const tasks=SOURCES.map(async s=>{
-      try{
-        if(type==="movies"&&s.type!=="movies")return[];
-        if(type!=="movies"&&s.type==="movies")return[];
-        if(s.id==="donapa")return await parseDoNapa(s.listUrl,filters);
-        if(s.id==="napa_library")return await parseNapaLibrary(s.listUrl,filters);
-        if(s.id==="visit_napa_valley")return await parseVisitNapaValley(s.listUrl,filters);
-        if(s.id==="amcan_chamber")return await parseGrowthZone(s.listUrl,s.name,"american-canyon",filters);
-        if(s.id==="calistoga_chamber")return await parseGrowthZone(s.listUrl,s.name,"calistoga",filters);
-        if(s.id==="yountville_chamber")return await parseGrowthZone(s.listUrl,s.name,"yountville",filters);
-        if(s.id==="cameo")return await parseCameo(s.listUrl,s.altUrls||[],filters);
-        return[];
-      }catch{return[];}
+    const tasks = SOURCES.map(async (s) => {
+      try {
+        if (type === "movies" && s.type !== "movies") return [];
+        if (type !== "movies" && s.type === "movies") return [];
+        if (s.id === "donapa") return await parseDoNapa(s.listUrl, filters);
+        if (s.id === "napa_library") return await parseNapaLibrary(s.listUrl, filters);
+        if (s.id === "visit_napa_valley") return await parseVisitNapaValley(s.listUrl, filters);
+        if (s.id === "amcan_chamber") return await parseGrowthZone(s.listUrl, s.name, "american-canyon", filters);
+        if (s.id === "calistoga_chamber") return await parseGrowthZone(s.listUrl, s.name, "calistoga", filters);
+        if (s.id === "yountville_chamber") return await parseGrowthZone(s.listUrl, s.name, "yountville", filters);
+        if (s.id === "cameo") return await parseCameo(s.listUrl, s.altUrls || [], filters);
+        return [];
+      } catch {
+        return [];
+      }
     });
 
     let results;
-    try{
-      results=await withTimeout(Promise.all(tasks));
-    }catch(err){
-      console.warn("Timeout — returning partial results:",err.message);
-      const settled=await Promise.allSettled(tasks);
-      results=settled.filter(r=>r.status==="fulfilled").map(r=>r.value||[]);
+    try {
+      results = await withTimeout(Promise.all(tasks));
+    } catch (err) {
+      console.warn("Timeout — returning partial results:", err.message);
+      const settled = await Promise.allSettled(tasks);
+      results = settled.filter((r) => r.status === "fulfilled").map((r) => r.value || []);
     }
 
-    let all=[]; for(const r of results) all=all.concat(r);
-    const seen=new Set(), dedup=[];
-    for(const x of all){
-      const k=(x.header||"")+(x.body||""); if(seen.has(k))continue;
-      seen.add(k); dedup.push(x);
+    let all = [];
+    for (const r of results) all = all.concat(r);
+    const seen = new Set();
+    const dedup = [];
+    for (const x of all) {
+      const k = (x.header || "") + (x.body || "");
+      if (seen.has(k)) continue;
+      seen.add(k);
+      dedup.push(x);
     }
 
-        const allFailed = dedup.length === 0;
+    const allFailed = dedup.length === 0;
     if (dedup.length < 3)
       console.warn(`Only ${dedup.length} verified events — supplement via web.`);
 
-    // --- Add fallback venues & map metadata when few results ---
-if (dedup.length < 3) {
-  dedup.push({
-    header: "Performance & Art Venues (for other nights)",
-    body:
-      "If you’d like more art or performance options on future dates, visit Napa Valley Performing Arts Center (Yountville), Lucky Penny Productions (Napa), Lincoln Theater (Yountville), Uptown Theatre (Napa), or Cameo Cinema (St. Helena).",
-    mapHint: [
-      { name: "Uptown Theatre Napa", lat: 38.2991, lon: -122.2858 },
-      { name: "Lincoln Theater", lat: 38.3926, lon: -122.3631 },
-      { name: "Lucky Penny Productions", lat: 38.2979, lon: -122.2864 },
-      { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
-      { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
-    ],
-  });
-}
+    if (dedup.length < 3) {
+      dedup.push({
+        header: "Performance & Art Venues (for other nights)",
+        body:
+          "If you’d like more art or performance options on future dates, visit Napa Valley Performing Arts Center (Yountville), Lucky Penny Productions (Napa), Lincoln Theater (Yountville), Uptown Theatre (Napa), or Cameo Cinema (St. Helena).",
+        mapHint: [
+          { name: "Uptown Theatre Napa", lat: 38.2991, lon: -122.2858 },
+          { name: "Lincoln Theater", lat: 38.3926, lon: -122.3631 },
+          { name: "Lucky Penny Productions", lat: 38.2979, lon: -122.2864 },
+          { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
+          { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
+        ],
+      });
+    }
 
     clearTimeout(hardTimeout);
-
-sendJson(res, 200, {
-  ok: !allFailed,
-  timeout: allFailed,
-  supplemented: dedup.length < 3,
-  count: dedup.slice(0, limit).length,
-  results: dedup.slice(0, limit).map(x => ({
-    header: x.header,
-    body: x.body,
-    geo: x.geo ? { lat: x.geo.lat, lon: x.geo.lon } : null,
-    mapHint: x.mapHint || null,
-  })),
-});
-
+    sendJson(res, 200, {
+      ok: !allFailed,
+      timeout: allFailed,
+      supplemented: dedup.length < 3,
+      count: dedup.slice(0, limit).length,
+      results: dedup.slice(0, limit).map((x) => ({
+        header: x.header,
+        body: x.body,
+        geo: x.geo ? { lat: x.geo.lat, lon: x.geo.lon } : null,
+        mapHint: x.mapHint || null,
+      })),
+    });
   } catch (e) {
     clearTimeout(hardTimeout);
     sendJson(res, 500, { ok: false, error: e?.message || String(e) });
   }
 }
-

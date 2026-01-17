@@ -177,7 +177,7 @@ function formatWeekender(e) {
   };
 }
 
-// ✅ Place these 4 extraction functions right HERE — before the parser section
+// ✅ Extraction utilities — place before parser section
 
 function getJsonLdEvents($) {
   const out = [];
@@ -187,9 +187,11 @@ function getJsonLdEvents($) {
       const arr = Array.isArray(data) ? data : [data];
       for (const x of arr) {
         if (x["@type"] === "Event") out.push(x);
-        if (Array.isArray(x["@graph"]))
-          for (const g of x["@graph"])
+        if (Array.isArray(x["@graph"])) {
+          for (const g of x["@graph"]) {
             if (g["@type"] === "Event") out.push(g);
+          }
+        }
       }
     } catch {}
   });
@@ -206,9 +208,16 @@ function extractStreetAddress(addr) {
 async function extractEventFromPage(url, opts = {}) {
   const html = await fetchText(url);
   const $ = load(html);
-  let title = null, startISO = null, endISO = null, address = null, description = null, price = null;
-  let geo = null;
 
+  let title = null,
+    startISO = null,
+    endISO = null,
+    address = null,
+    description = null,
+    price = null,
+    geo = null;
+
+  // --- Structured data extraction (JSON-LD) ---
   const ld = getJsonLdEvents($);
   const ev = ld[0];
   if (ev) {
@@ -218,32 +227,92 @@ async function extractEventFromPage(url, opts = {}) {
     description = ev.description || null;
     const loc = Array.isArray(ev.location) ? ev.location[0] : ev.location;
     if (loc && loc.address) address = extractStreetAddress(loc.address);
+
     const offers = Array.isArray(ev.offers) ? ev.offers[0] : ev.offers;
     if (offers && offers.price !== undefined && offers.price !== null) {
       const p = String(offers.price).trim();
-      if (p === "0" || p === "0.00") price = "Free."; 
-      else price = `Tickets ${p}.`;
+      price = p === "0" || p === "0.00" ? "Free." : `Tickets ${p}.`;
     }
   }
 
-  if (!title)
-    title = cleanText($("h1").first().text()) || cleanText($("title").text());
+  // --- Supplemental time & price extraction (restored heuristic, Jan 2026) ---
+  if (!startISO) {
+    // Find visible time text (e.g., "7 p.m.", "6:30 PM", "7–9 p.m.")
+    const timeMatch = html.match(
+      /\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i
+    );
+    if (timeMatch) {
+      const hour = parseInt(timeMatch[1], 10);
+      const minute = timeMatch[2] || "00";
+      const ampm = timeMatch[5].toLowerCase();
+      const isoHour = ampm.includes("p") && hour < 12 ? hour + 12 : hour % 12;
+      startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
+    }
+  }
 
-  let dateISO = null, when = null;
+  if (!price) {
+    // Find $ amounts or "free" mentions in visible text
+    const priceMatch = html.match(/\$\s?\d+(?:\.\d{2})?|\bfree\b/i);
+    if (priceMatch) {
+      price = /free/i.test(priceMatch[0])
+        ? "Free."
+        : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
+    }
+  }
+
+  // --- Title fallback ---
+  if (!title) {
+    title = cleanText($("h1").first().text()) || cleanText($("title").text());
+  }
+
+  // --- Date & time formatting ---
+  let dateISO = null,
+    when = null;
   const ymd = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "");
   if (ymd) {
     dateISO = ymd[1];
     const ap = apDateFromYMD(dateISO);
-    const t = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
+    const t = endISO
+      ? formatTimeRange(startISO, endISO)
+      : apTimeFromISOClock(startISO);
     when = ap ? (t ? `${ap}, ${t}` : ap) : null;
   }
 
+  // --- Description and price inference ---
   let details = description ? truncate(description) : "Details on website.";
   if (details && !details.endsWith(".")) details += ".";
   if (!price) {
     const inf = inferPriceFromText(description || details);
     if (inf) price = inf;
   }
+
+  // --- Geo assignment fallback ---
+  if (!opts.skipGeo && !geo && opts.town) {
+    const geoHints = {
+      napa: { lat: 38.2975, lon: -122.2869 },
+      "st-helena": { lat: 38.5056, lon: -122.4703 },
+      yountville: { lat: 38.3926, lon: -122.3631 },
+      calistoga: { lat: 38.578, lon: -122.5797 },
+      "american-canyon": { lat: 38.1686, lon: -122.2608 },
+    };
+    geo = geoHints[opts.town.toLowerCase()] || null;
+  }
+
+  // --- Final normalized event object ---
+  return {
+    title: title || "Event",
+    url,
+    dateISO,
+    when: when || "Date and time on website.",
+    details,
+    price: price || "Price not provided.",
+    contact: `For more information visit their website (${url}).`,
+    address: address || "Venue address not provided.",
+    town: opts.town || "all",
+    tag: opts.tag || "any",
+    geo,
+  };
+}
 
   // --- Geo assignment fallback ---
   if (!opts.skipGeo && !geo && opts.town) {

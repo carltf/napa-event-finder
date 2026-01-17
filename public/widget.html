@@ -2,28 +2,114 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Napa Event Finder Widget</title>
+  <title>Napa Valley Event Finder</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 1.5rem;
+      color: #222;
+      background: #fff;
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+    }
+    form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    select, input[type="date"], button {
+      padding: 0.5rem;
+      font-size: 0.95rem;
+    }
+    button {
+      background: #111;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      border-radius: 0.25rem;
+      padding: 0.5rem 1rem;
+    }
+    button:hover { background: #333; }
+    #results { margin-top: 1rem; line-height: 1.4; }
+    .event {
+      border-bottom: 1px solid #ddd;
+      padding: 0.5rem 0;
+    }
+    .header { font-weight: 600; }
+    .body { margin-top: 0.25rem; color: #555; }
+    small { color: #777; }
   </style>
 </head>
 <body>
+  <h1>Napa Valley Event Finder</h1>
+
+  <form id="searchForm">
+    <select id="town">
+      <option value="all">All Napa County</option>
+      <option value="napa">Napa</option>
+      <option value="yountville">Yountville</option>
+      <option value="st-helena">St. Helena</option>
+      <option value="calistoga">Calistoga</option>
+      <option value="american-canyon">American Canyon</option>
+    </select>
+
+    <select id="type">
+      <option value="any">Any event</option>
+      <option value="movies">Movies</option>
+    </select>
+
+    <input type="date" id="start" />
+    <input type="date" id="end" />
+    <button type="submit">Search</button>
+  </form>
+
+  <small>Returns up to 5 results in Weekender-style formatting.</small>
+  <div id="results"></div>
+
   <script>
-    fetch("https://napa-event-finder.vercel.app/api/search?town=napa&limit=5")
-      .then(r => r.json())
-      .then(data => {
-        const container = document.createElement("div");
-        data.results.forEach(ev => {
-          const item = document.createElement("p");
-          item.textContent = `${ev.header} — ${ev.body}`;
-          container.appendChild(item);
-        });
-        document.body.appendChild(container);
-      })
-      .catch(err => {
-        document.body.innerHTML = "Error loading events.";
+    async function fetchEvents(params) {
+      const q = new URLSearchParams(params).toString();
+      const res = await fetch(`/api/search?${q}`);
+      if (!res.ok) throw new Error("Fetch failed");
+      return res.json();
+    }
+
+    const form = document.getElementById("searchForm");
+    const resultsDiv = document.getElementById("results");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      resultsDiv.textContent = "Loading events…";
+      const params = {
+        town: form.town.value,
+        type: form.type.value,
+        start: form.start.value,
+        end: form.end.value,
+        limit: 5
+      };
+
+      try {
+        const data = await fetchEvents(params);
+        if (!data || !data.results || !data.results.length) {
+          resultsDiv.textContent = "No events found for that range.";
+          return;
+        }
+        resultsDiv.innerHTML = data.results.map(ev => `
+          <div class="event">
+            <div class="header">${ev.header}</div>
+            <div class="body">${ev.body}</div>
+          </div>
+        `).join("");
+      } catch (err) {
         console.error(err);
-      });
+        resultsDiv.textContent = "Error loading events.";
+      }
+    });
   </script>
 </body>
 </html>

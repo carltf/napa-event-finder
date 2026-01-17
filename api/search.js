@@ -314,33 +314,6 @@ async function extractEventFromPage(url, opts = {}) {
   };
 }
 
-  // --- Geo assignment fallback ---
-  if (!opts.skipGeo && !geo && opts.town) {
-    const geoHints = {
-      napa: { lat: 38.2975, lon: -122.2869 },
-      "st-helena": { lat: 38.5056, lon: -122.4703 },
-      yountville: { lat: 38.3926, lon: -122.3631 },
-      calistoga: { lat: 38.578, lon: -122.5797 },
-      "american-canyon": { lat: 38.1686, lon: -122.2608 },
-    };
-    geo = geoHints[opts.town.toLowerCase()] || null;
-  }
-
-  return {
-    title: title || "Event",
-    url,
-    dateISO,
-    when: when || "Date and time on website.",
-    details,
-    price: price || "Price not provided.",
-    contact: `For more information visit their website (${url}).`,
-    address: address || "Venue address not provided.",
-    town: opts.town || "all",
-    tag: opts.tag || "any",
-    geo,
-  };
-}
-
 async function extractOrFallback(url, title, opts = {}) {
   try {
     const ev = await extractEventFromPage(url, opts);

@@ -586,6 +586,16 @@ if (dedup.length < 3) {
 
     clearTimeout(hardTimeout);
 
+// --- Build map metadata for client rendering ---
+const mapData = dedup
+  .flatMap(x => {
+    const points = [];
+    if (x.geo) points.push({ name: x.header, lat: x.geo.lat, lon: x.geo.lon });
+    if (x.mapHint) points.push(...x.mapHint);
+    return points;
+  })
+  .filter(Boolean);
+
 sendJson(res, 200, {
   ok: !allFailed,
   timeout: allFailed,
@@ -597,6 +607,7 @@ sendJson(res, 200, {
     geo: x.geo ? { lat: x.geo.lat, lon: x.geo.lon } : null,
     mapHint: x.mapHint || null,
   })),
+  map: mapData.length ? mapData : null, // ✅ New unified map output
 });
 
   } catch (e) {

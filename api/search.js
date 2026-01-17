@@ -508,6 +508,22 @@ async function parseCameo(listUrl, alt, f) {
   }
 
   return filterAndRank(events, f);
+function filterAndRank(events, f = {}) {
+  const out = [];
+
+  for (const e of events) {
+    if (!e || !e.dateISO) continue;
+    if (!withinRange(e.dateISO, f.startISO, f.endISO)) continue;
+    if (f.town && f.town !== "all" && e.town && e.town !== f.town) continue;
+    if (f.type && f.type !== "any" && e.tag && e.tag !== f.type) continue;
+    out.push(e);
+  }
+
+  // Sort by date (most recent first)
+  out.sort((a, b) => (a.dateISO < b.dateISO ? 1 : -1));
+
+  // Convert to Weekender-style format
+  return out.map(formatWeekender);
 }
 
 // --------------------------------------------------

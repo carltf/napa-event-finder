@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Napa Event Finder Widget</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; }
+  </style>
+</head>
+<body>
+  <script>
+    fetch("https://napa-event-finder.vercel.app/api/search?town=napa&limit=5")
+      .then(r => r.json())
+      .then(data => {
+        const container = document.createElement("div");
+        data.results.forEach(ev => {
+          const item = document.createElement("p");
+          item.textContent = `${ev.header} — ${ev.body}`;
+          container.appendChild(item);
+        });
+        document.body.appendChild(container);
+      })
+      .catch(err => {
+        document.body.innerHTML = "Error loading events.";
+        console.error(err);
+      });
+  </script>
+</body>
+</html>

@@ -1,29 +1,77 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Napa Event Finder Widget</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; }
-  </style>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
 </head>
-<body>
-<script>
-fetch("/api/search?town=napa&limit=5")
-  .then(r => r.json())
-  .then(data => {
-    const container = document.createElement("div");
-    data.results.forEach(ev => {
-      const item = document.createElement("p");
-      item.textContent = `${ev.header} — ${ev.body}`;
-      container.appendChild(item);
-    });
-    document.body.appendChild(container);
-  })
-  .catch(err => {
-    document.body.innerHTML = "Error loading events.";
-    console.error(err);
-  });
-</script>
+<body class="bg-gray-50 text-gray-900 font-sans">
+  <div class="max-w-4xl mx-auto p-6">
+    <h1 class="text-2xl font-bold mb-4">Napa Valley Event Finder</h1>
+
+    <div class="flex flex-wrap gap-3 mb-4">
+      <select id="town" class="border rounded p-2">
+        <option value="all">All Napa County</option>
+        <option value="napa">Napa</option>
+        <option value="yountville">Yountville</option>
+        <option value="st-helena">St. Helena</option>
+        <option value="calistoga">Calistoga</option>
+        <option value="american-canyon">American Canyon</option>
+      </select>
+
+      <select id="type" class="border rounded p-2">
+        <option value="any">Any event</option>
+        <option value="movies">Movies</option>
+      </select>
+
+      <input id="start" type="date" class="border rounded p-2" />
+      <input id="end" type="date" class="border rounded p-2" />
+      <button id="search" class="bg-blue-600 text-white px-4 py-2 rounded">Search</button>
+    </div>
+
+    <div id="results" class="space-y-4"></div>
+  </div>
+
+  <script>
+    async function fetchEvents() {
+      const town = document.getElementById('town').value;
+      const type = document.getElementById('type').value;
+      const start = document.getElementById('start').value;
+      const end = document.getElementById('end').value;
+      const resultsDiv = document.getElementById('results');
+
+      resultsDiv.innerHTML = '<p class="text-gray-500">Loading events...</p>';
+
+      try {
+        const res = await axios.get(`https://napa-event-finder.vercel.app/api/search`, {
+          params: { town, type, start, end }
+        });
+
+        if (!res.data.ok || res.data.count === 0) {
+          resultsDiv.innerHTML = '<p>No events found for your search.</p>';
+          return;
+        }
+
+        resultsDiv.innerHTML = res.data.results.map(e => `
+          <div class="bg-white shadow rounded p-4">
+            <h2 class="font-semibold text-lg">${e.header}</h2>
+            <p class="text-sm text-gray-700">${e.body}</p>
+          </div>
+        `).join('');
+      } catch (err) {
+        resultsDiv.innerHTML = `<p class="text-red-500">Error loading events: ${err.message}</p>`;
+      }
+    }
+
+    document.getElementById('search').addEventListener('click', fetchEvents);
+
+    // Auto-load defaults for today
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('start').value = today;
+    document.getElementById('end').value = today;
+    fetchEvents();
+  </script>
 </body>
 </html>

@@ -248,7 +248,7 @@ export default async function handler(req,res){
           { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
           { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
         ],
-      });
+    });
     }
 
     clearTimeout(hardTimeout);
@@ -258,11 +258,17 @@ export default async function handler(req,res){
       timeout: allFailed,
       supplemented: dedup.length < 3,
       count: dedup.slice(0, limit).length,
-      results: dedup.slice(0, limit),
+      results: dedup.slice(0, limit).map(x => ({
+        header: x.header,
+        body: x.body,
+        geo: x.geo || null,
+        mapHint: x.mapHint || null,
+      })),
     });
 
-  }catch(e){
+  } catch (e) {
     clearTimeout(hardTimeout);
-    sendJson(res,500,{ok:false,error:e?.message||String(e)});
+    sendJson(res, 500, { ok: false, error: e?.message || String(e) });
   }
 }
+

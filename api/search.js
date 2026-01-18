@@ -108,9 +108,16 @@ function apDateFromYMD(ymd) {
   return `${dts[dt.getUTCDay()]}, ${mos[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
 }
 function apTimeFromISOClock(iso) {
-  const m=/T(\d{2}):(\d{2})/.exec(iso||""); if(!m)return null;
-  let h=+m[1], mm=+m[2], ampm=h>=12?"p.m.":"a.m."; h%=12; if(h===0)h=12;
-  return mm?`${h}:${String(mm).padStart(2,"0")} ${ampm}`:`${h} ${ampm}`;
+  const m = /T(\d{2}):(\d{2})/.exec(iso || "");
+  if (!m) return null;
+  const hour = +m[1];
+  const minute = +m[2];
+  // Treat midnight and missing minutes as "time not specified"
+  if (hour === 0 && minute === 0) return null;
+  let h = hour;
+  let ampm = h >= 12 ? "p.m." : "a.m.";
+  h = h % 12 || 12;
+  return `${h}${minute ? ":" + String(minute).padStart(2, "0") : ""} ${ampm}`;
 }
 function formatTimeRange(a,b){const t1=apTimeFromISOClock(a),t2=apTimeFromISOClock(b);if(!t1&&!t2)return null;if(t1&&!t2)return t1;if(!t1&&t2)return t2;if(t1===t2)return t1;return`${t1}–${t2}`;}
 function truncate(s,max=260){const x=cleanText(s);return x.length<=max?x:x.slice(0,max-1).trimEnd()+"…";}

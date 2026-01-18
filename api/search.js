@@ -107,16 +107,22 @@ function apDateFromYMD(ymd) {
   const dts=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"], mos=["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
   return `${dts[dt.getUTCDay()]}, ${mos[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
 }
+
 function apTimeFromISOClock(iso) {
-  const m = /T(\d{2}):(\d{2})/.exec(iso || "");
+  if (!iso) return null;
+  // Handle "T00:00" or "T00:00:00" as no time provided
+  if (/T0{1,2}:0{1,2}(:0{1,2})?/.test(iso)) return null;
+
+  const m = /T(\d{2}):(\d{2})/.exec(iso);
   if (!m) return null;
+
   const hour = +m[1];
   const minute = +m[2];
-  if (hour === 0 && minute === 0) return null; // skip midnight placeholders
   let h = hour % 12 || 12;
   const ampm = hour >= 12 ? "p.m." : "a.m.";
   return `${h}${minute ? ":" + String(minute).padStart(2, "0") : ""} ${ampm}`;
 }
+
 function formatTimeRange(a,b){const t1=apTimeFromISOClock(a),t2=apTimeFromISOClock(b);if(!t1&&!t2)return null;if(t1&&!t2)return t1;if(!t1&&t2)return t2;if(t1===t2)return t1;return`${t1}–${t2}`;}
 function truncate(s,max=260){const x=cleanText(s);return x.length<=max?x:x.slice(0,max-1).trimEnd()+"…";}
 function inferPriceFromText(t){t=cleanText(t).toLowerCase();if(!t)return null;return["free","no cover","complimentary"].some(x=>t.includes(x))?"Free.":null;}

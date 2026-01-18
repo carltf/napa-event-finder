@@ -200,13 +200,43 @@ Original file line number	Diff line number	Diff line change
 <body>
 @@ -72,7 +196,7 @@
 
-      <div class="row">
-        <button id="search">Search</button>
-        <button id="copy" class="secondary" disabled>Copy results</button>
-        <button id="copy" class="secondary" disabled style="display:none;">Copy results</button>
-        <span class="hint">Returns up to 5 results in Weekender-style formatting.</span>
-      </div>
+<div class="grid">
+  <div>
+    <label for="town">Town</label>
+    <select id="town">
+      <option value="all">All Napa County</option>
+      <option value="napa">Napa</option>
+      <option value="st-helena">St. Helena</option>
+      <option value="yountville">Yountville</option>
+      <option value="calistoga">Calistoga</option>
+      <option value="american-canyon">American Canyon</option>
+    </select>
+  </div>
 
+  <div>
+    <label for="type">Type</label>
+    <select id="type">
+      <option value="any">Any event</option>
+      <option value="art">Art & Exhibits</option>
+      <option value="music">Live Music</option>
+      <option value="food">Food & Culinary</option>
+      <option value="wine">Wine & Tastings</option>
+      <option value="community">Community & Family</option>
+      <option value="theatre">Theatre & Performance</option>
+      <option value="movies">Movies</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="start">Start date</label>
+    <input type="date" id="start" />
+  </div>
+
+  <div>
+    <label for="end">End date</label>
+    <input type="date" id="end" />
+  </div>
+</div>
 @@ -81,182 +205,150 @@
       <div id="err" class="error" style="display:none;"></div>
 

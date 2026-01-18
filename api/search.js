@@ -112,11 +112,9 @@ function apTimeFromISOClock(iso) {
   if (!m) return null;
   const hour = +m[1];
   const minute = +m[2];
-  // Treat midnight and missing minutes as "time not specified"
-  if (hour === 0 && minute === 0) return null;
-  let h = hour;
-  let ampm = h >= 12 ? "p.m." : "a.m.";
-  h = h % 12 || 12;
+  if (hour === 0 && minute === 0) return null; // skip midnight placeholders
+  let h = hour % 12 || 12;
+  const ampm = hour >= 12 ? "p.m." : "a.m.";
   return `${h}${minute ? ":" + String(minute).padStart(2, "0") : ""} ${ampm}`;
 }
 function formatTimeRange(a,b){const t1=apTimeFromISOClock(a),t2=apTimeFromISOClock(b);if(!t1&&!t2)return null;if(t1&&!t2)return t1;if(!t1&&t2)return t2;if(t1===t2)return t1;return`${t1}–${t2}`;}
@@ -244,18 +242,21 @@ async function extractEventFromPage(url, opts = {}) {
 
   // --- Supplemental time & price extraction (restored heuristic, Jan 2026) ---
   if (!startISO) {
-    // Find visible time text (e.g., "7 p.m.", "6:30 PM", "7–9 p.m.")
-    const timeMatch = html.match(
-      /\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i
-    );
-    if (timeMatch) {
-      const hour = parseInt(timeMatch[1], 10);
-      const minute = timeMatch[2] || "00";
-      const ampm = timeMatch[5].toLowerCase();
-      const isoHour = ampm.includes("p") && hour < 12 ? hour + 12 : hour % 12;
-      startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
-    }
+  // Look for explicit times like "7 p.m." or "6:30 PM"
+  const timeMatch = html.match(
+    /\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i
+  );
+  if (timeMatch) {
+    const hour = parseInt(timeMatch[1], 10);
+    const minute = timeMatch[2] || "00";
+    const ampm = timeMatch[5].toLowerCase();
+    const isoHour = ampm.includes("p") && hour < 12 ? hour + 12 : hour % 12;
+    startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
+  } else {
+    // ❌ No valid time found → don’t set startISO at all (avoids “12 a.m.”)
+    startISO = null;
   }
+}
 
   if (!price) {
     // Find $ amounts or "free" mentions in visible text

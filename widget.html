@@ -431,6 +431,30 @@ Original file line number	Diff line number	Diff line change
       });
     }
   }
+// --- Map rendering ---
+const mapDiv = document.getElementById("mapContainer");
+mapDiv.innerHTML = ""; // clear old map
+
+if (data.map && data.map.length) {
+  // initialize Leaflet map
+  const first = data.map[0];
+  const map = L.map("mapContainer").setView([first.lat, first.lon], 10);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 17,
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+  }).addTo(map);
+
+  data.map.forEach((pt) => {
+    if (pt.lat && pt.lon) {
+      L.marker([pt.lat, pt.lon]).addTo(map).bindPopup(pt.name);
+    }
+  });
+} else {
+  mapDiv.innerHTML =
+    '<p style="color:#6b7280;font-size:13px;">No map data available for this search.</p>';
+}
 
   $("search").addEventListener("click", search);
     async function search() {

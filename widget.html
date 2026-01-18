@@ -11,35 +11,35 @@ Wiki
 Security
 Insights
 Settings
-Commit 6f00bf8
+Commit d6c2e16
 carltf
 carltf
 authored
-2 weeks ago
+3 hours ago
 ·
 ·
 Verified
 Update widget.html
 main
 1 parent 
-bb0f5d1
+c3ac35a
  commit 
-6f00bf8
+d6c2e16
 File tree
 
 widget.html
 1 file changed
-+1
--1
++276
+-184
 lines changed
 
  
 ‎widget.html‎
-+1
--1
-Lines changed: 1 addition & 1 deletion
++276
+-184
+Lines changed: 276 additions & 184 deletions
 Original file line number	Diff line number	Diff line change
-@@ -1,262 +1,262 @@
+@@ -1,32 +1,156 @@
 <!doctype html>
 <html lang="en">
 <head>
@@ -69,68 +69,153 @@ Original file line number	Diff line number	Diff line change
     .footer{margin-top:12px; font-size:12px; color:var(--muted);}
     .error{color:#b91c1c; font-size:13px; margin-top:10px;}
     textarea{width:100%; min-height:140px; border:1px solid var(--border); border-radius:12px; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px;}
+    :root {
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --bg: #ffffff;
+      --chip: #f3f4f6;
+    }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 0;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 12px 0;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .03);
+      background: #fff;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    @media (min-width: 820px) {
+      .grid {
+        grid-template-columns: repeat(4, 1fr);
+      }
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 6px 0;
+    }
+    select,
+    input {
+      width: 100%;
+      padding: 10px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    button {
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #111827;
+      color: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: #fff;
+      color: #111827;
+    }
+    button:disabled {
+      opacity: .6;
+      cursor: not-allowed;
+    }
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    .results {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .event h3 {
+      margin: 0 0 6px 0;
+      font-size: 16px;
+    }
+    .event p {
+      margin: 0;
+      line-height: 1.35;
+    }
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .chip {
+      background: var(--chip);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #374151;
+    }
+    .error {
+      color: #b91c1c;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+    .footer-note {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 16px;
+      text-align: left;
+      max-width: 980px;
+      margin-left: auto;
+      margin-right: auto;
+      padding: 0 18px;
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Napa Valley Event Finder</h1>
-
-    <div class="card">
-      <div class="grid">
-        <div>
-          <label for="town">Town</label>
-          <select id="town">
-            <option value="all">All Napa County</option>
-            <option value="napa">Napa</option>
-            <option value="yountville">Yountville</option>
-            <option value="st-helena">St. Helena</option>
-            <option value="calistoga">Calistoga</option>
-            <option value="american-canyon">American Canyon</option>
-          </select>
-        </div>
-
-        <div>
-          <label for="type">Type</label>
-          <select id="type">
-            <option value="any">Any event</option>
-            <option value="music">Music</option>
-            <option value="food-wine">Food &amp; wine</option>
-            <option value="family">Family</option>
-            <option value="art">Art</option>
-            <option value="movies">Movies (Cameo Cinema)</option>
-          </select>
-        </div>
-
-        <div>
-          <label for="start">Start date</label>
-          <input id="start" type="date" />
-        </div>
-
-        <div>
-          <label for="end">End date</label>
-          <input id="end" type="date" />
-        </div>
-      </div>
+@@ -72,7 +196,7 @@
 
       <div class="row">
         <button id="search">Search</button>
         <button id="copy" class="secondary" disabled>Copy results</button>
+        <button id="copy" class="secondary" disabled style="display:none;">Copy results</button>
         <span class="hint">Returns up to 5 results in Weekender-style formatting.</span>
       </div>
 
-      <div class="chips" id="sources"></div>
-
+@@ -81,182 +205,150 @@
       <div id="err" class="error" style="display:none;"></div>
 
       <div class="results" id="results"></div>
-
       <div id="copyBlock" style="display:none; margin-top:12px;">
         <label for="copyText">Copy/paste text</label>
         <textarea id="copyText" readonly></textarea>
       </div>
-
       <div class="footer">
-        Note: Results are pulled from a curated set of local calendars and venues. Always confirm details on the original event website.
         Note: Results are pulled from a set of local calendars and venues. Always confirm details on the original event website.
       </div>
     </div>
@@ -140,27 +225,22 @@ Original file line number	Diff line number	Diff line change
   // If you ever host the API on a different domain, set it here:
   // window.NVF_API_BASE = "https://example.com";
   const API_BASE = window.NVF_API_BASE || "";
-
   const $ = (id) => document.getElementById(id);
-
   function showError(msg) {
     const el = $("err");
     el.style.display = "block";
     el.textContent = msg;
   }
-
   function clearError() {
     const el = $("err");
     el.style.display = "none";
     el.textContent = "";
   }
-
   function escapeHtml(s){
     return String(s||"").replace(/[&<>'"]/g, c => ({
       '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'
     }[c]));
   }
-
   function normalizeDateInput(val) {
     // Some embedded contexts (Safari/Squarespace) can surface MM/DD/YYYY.
     // Convert MM/DD/YYYY -> YYYY-MM-DD for the API.
@@ -172,14 +252,12 @@ Original file line number	Diff line number	Diff line change
     const yy = m[3];
     return `${yy}-${mm}-${dd}`;
   }
-
   function ymdToNumber(ymd) {
     // ymd: YYYY-MM-DD
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
     if (!m) return null;
     return (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]);
   }
-
   function setDefaultDates() {
     // If empty, default to today and +14 days.
     const today = new Date();
@@ -194,9 +272,19 @@ Original file line number	Diff line number	Diff line change
       const end = new Date(today);
       end.setDate(end.getDate() + 14);
       $("end").value = toYMD(end);
+  <!-- Footer note now sits outside the white card -->
+  <div class="footer-note">
+    Note: Results are pulled from a set of local calendars and venues. Always confirm details on the original event website.
+  </div>
+  <script>
+    const API_BASE = window.NVF_API_BASE || "";
+    const $ = (id) => document.getElementById(id);
+    function showError(msg) {
+      const el = $("err");
+      el.style.display = "block";
+      el.textContent = msg;
     }
   }
-
   async function loadSources() {
     try {
       const r = await fetch(API_BASE + "/sources.json", { cache: "no-store" });
@@ -212,12 +300,10 @@ Original file line number	Diff line number	Diff line change
       });
     } catch (_) {}
   }
-
   function render(results) {
     const wrap = $("results");
     wrap.innerHTML = "";
     const copyLines = [];
-
     results.forEach(item => {
       const div = document.createElement("div");
       div.className = "card event";
@@ -226,27 +312,21 @@ Original file line number	Diff line number	Diff line change
         <p>${escapeHtml(item.body)}</p>
       `;
       wrap.appendChild(div);
-
       copyLines.push(item.header);
       copyLines.push(item.body);
       copyLines.push("");
     });
-
     $("copy").disabled = results.length === 0;
     $("copyBlock").style.display = results.length ? "block" : "none";
     $("copyText").value = copyLines.join("\n").trim();
   }
-
   async function search() {
     clearError();
-
     const town = $("town").value;
     const type = $("type").value;
-
     // Normalize dates for API call
     let start = normalizeDateInput($("start").value);
     let end = normalizeDateInput($("end").value);
-
     // If user entered dates backwards, swap them
     const sNum = ymdToNumber(start);
     const eNum = ymdToNumber(end);
@@ -255,26 +335,82 @@ Original file line number	Diff line number	Diff line change
       // Update UI if they were standard yyyy-mm-dd values
       $("start").value = start;
       $("end").value = end;
+    function clearError() {
+      const el = $("err");
+      el.style.display = "none";
+      el.textContent = "";
     }
 
     const qs = new URLSearchParams({ town, type, start, end, limit: "5" }).toString();
     const url = API_BASE + "/api/search?" + qs;
+    function escapeHtml(s) {
+      return String(s || "").replace(/[&<>'"]/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        "'": '&#39;',
+        '"': '&quot;'
+      }[c]));
+    }
 
     $("search").textContent = "Searching…";
     $("search").disabled = true;
+    function normalizeDateInput(val) {
+      const v = (val || "").trim();
+      const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+      if (!m) return v;
+      const mm = m[1].padStart(2, "0");
+      const dd = m[2].padStart(2, "0");
+      const yy = m[3];
+      return `${yy}-${mm}-${dd}`;
+    }
 
     try {
       const r = await fetch(url, { cache: "no-store" });
       const data = await r.json().catch(() => null);
+    function ymdToNumber(ymd) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
+      if (!m) return null;
+      return (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]);
+    }
 
       if (!r.ok) {
         const msg = (data && data.error) ? data.error : `HTTP ${r.status}`;
         throw new Error(msg);
+    function setDefaultDates() {
+      const today = new Date();
+      const toYMD = (d) => {
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd}`;
+      };
+      if (!$("start").value) $("start").value = toYMD(today);
+      if (!$("end").value) {
+        const end = new Date(today);
+        end.setDate(end.getDate() + 14);
+        $("end").value = toYMD(end);
       }
       if (!data || !data.ok) throw new Error((data && data.error) || "Search failed.");
+    }
 
       const results = data.results || [];
       render(results);
+    async function loadSources() {
+      try {
+        const r = await fetch(API_BASE + "/sources.json", { cache: "no-store" });
+        if (!r.ok) return;
+        const sources = await r.json();
+        const el = $("sources");
+        el.innerHTML = "";
+        sources.forEach(s => {
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.textContent = s.name;
+          el.appendChild(chip);
+        });
+      } catch (_) {}
+    }
 
       if (results.length === 0) {
         showError("No matches found for that filter. Try expanding the date range or choosing All Napa County.");
@@ -284,10 +420,35 @@ Original file line number	Diff line number	Diff line change
     } finally {
       $("search").textContent = "Search";
       $("search").disabled = false;
+    function render(results) {
+      const wrap = $("results");
+      wrap.innerHTML = "";
+      results.forEach(item => {
+        const div = document.createElement("div");
+        div.className = "card event";
+        div.innerHTML = `
+          <h3>${escapeHtml(item.header)}</h3>
+          <p>${escapeHtml(item.body)}</p>
+        `;
+        wrap.appendChild(div);
+      });
     }
   }
 
   $("search").addEventListener("click", search);
+    async function search() {
+      clearError();
+      const town = $("town").value;
+      const type = $("type").value;
+      let start = normalizeDateInput($("start").value);
+      let end = normalizeDateInput($("end").value);
+      const sNum = ymdToNumber(start);
+      const eNum = ymdToNumber(end);
+      if (sNum && eNum && sNum > eNum) {
+        const tmp = start; start = end; end = tmp;
+        $("start").value = start;
+        $("end").value = end;
+      }
 
   $("copy").addEventListener("click", async () => {
     try {
@@ -296,16 +457,44 @@ Original file line number	Diff line number	Diff line change
       setTimeout(() => $("copy").textContent = "Copy results", 1200);
     } catch (_) {}
   });
+      const qs = new URLSearchParams({ town, type, start, end, limit: "5" }).toString();
+      const url = API_BASE + "/api/search?" + qs;
+      $("search").textContent = "Searching…";
+      $("search").disabled = true;
+      try {
+        const r = await fetch(url, { cache: "no-store" });
+        const data = await r.json().catch(() => null);
+        if (!r.ok) {
+          const msg = (data && data.error) ? data.error : `HTTP ${r.status}`;
+          throw new Error(msg);
+        }
+        if (!data || !data.ok) throw new Error((data && data.error) || "Search failed.");
+        const results = data.results || [];
+        render(results);
+        if (results.length === 0) {
+          showError("No matches found for that filter. Try expanding the date range or choosing All Napa County.");
+        }
+      } catch (e) {
+        showError("Could not load results. " + (e && e.message ? e.message : String(e)));
+      } finally {
+        $("search").textContent = "Search";
+        $("search").disabled = false;
+      }
+    }
 
   setDefaultDates();
   loadSources();
 </script>
+    $("search").addEventListener("click", search);
+    setDefaultDates();
+    loadSources();
+  </script>
 </body>
 </html>
-~
 0 commit comments
 Comments
 0
  (0)
 Comment
 You're not receiving notifications from this thread.
+There are no files selected for viewing

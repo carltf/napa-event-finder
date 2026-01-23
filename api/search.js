@@ -4,12 +4,13 @@ import * as cheerioNS from "cheerio";
  * Napa Valley Event Finder — API (Vercel)
  * Map-forward + category-aware + safer date handling
  * --------------------------------------------------
- * Fixes:
- * - Supports type filters: any, art, music, food, wellness, nightlife, movies
- * - Classifies events by keywords (no more tag="any" for everything)
- * - Removes unsafe “assume today” time inference when date is unknown
- * - Date-range overlap logic for multi-day events (start/end)
- * - Always returns stable map pins when results exist
+ * Fixes / Improvements:
+ * - Removes duplicate / broken Weekender formatter code
+ * - Defines missing time helpers (formatTimeRange, apTimeFromISOClock)
+ * - Corrects brace structure in extractEventFromPage (date/time not nested under price block)
+ * - Adds `when` to extracted event objects so Weekender output is consistent
+ * - Expands CORS allowlist to production domains
+ * - Adds small concurrency control to per-event page fetches to reduce aggregate timeouts
  */
 
 const load = cheerioNS.load || (cheerioNS.default && cheerioNS.default.load);
@@ -18,8 +19,9 @@ if (!load) throw new Error("Cheerio 'load' not found. Check cheerio package vers
 // -------------------- CORS --------------------
 const ALLOWED_ORIGINS = new Set([
   "https://napavalleyfeatures.squarespace.com",
-  // "https://napavalleyfeatures.com",
-  // "https://www.napavalleyfeatures.com",
+  "https://napavalleyfeatures.com",
+  "https://www.napavalleyfeatures.com",
+  "http://localhost:3000",
 ]);
 
 function applyCors(req, res) {
@@ -88,13 +90,9 @@ const SOURCES = [
 // -------------------- Utilities --------------------
 function decodeEntities(str) {
   let s = String(str || "");
-
-  // Some sources double-encode, e.g. "&amp;#038;" -> "&#038;" -> "&"
-  // Run a couple passes until stable (bounded to avoid loops).
   for (let i = 0; i < 3; i++) {
     const before = s;
 
-    // Decode named entities first (so "&amp;#038;" becomes "&#038;")
     const named = {
       "&amp;": "&",
       "&quot;": '"',
@@ -105,22 +103,34 @@ function decodeEntities(str) {
     };
     s = s.replace(/&(amp|quot|apos|lt|gt|nbsp);/g, (m) => named[m] || m);
 
-    // Decode numeric entities next
     s = s
       .replace(/&#(\d+);/g, (_, n) => {
-        try { return String.fromCodePoint(+n); } catch { return _; }
+        try {
+          return String.fromCodePoint(+n);
+        } catch {
+          return _;
+        }
       })
       .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => {
-        try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _; }
+        try {
+          return String.fromCodePoint(parseInt(h, 16));
+        } catch {
+          return _;
+        }
       });
 
     if (s === before) break;
   }
-
   return s;
 }
-function cleanText(s) { return decodeEntities(String(s || "")).replace(/\s+/g, " ").trim(); }
-function toISODate(d) { return d.toISOString().slice(0, 10); }
+
+function cleanText(s) {
+  return decodeEntities(String(s || "")).replace(/\s+/g, " ").trim();
+}
+
+function toISODate(d) {
+  return d.toISOString().slice(0, 10);
+}
 
 function parseISODate(s) {
   const m1 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
@@ -132,35 +142,69 @@ function parseISODate(s) {
 
 function titleCase(s) {
   if (!s) return s;
-  const small = new Set(["a","an","and","at","but","by","for","in","of","on","or","the","to","with"]);
-  return s.trim().split(/\s+/).map((w,i)=> {
-    const c=w.toLowerCase();
-    return i && small.has(c) ? c : c[0].toUpperCase()+c.slice(1);
-  }).join(" ");
+  const small = new Set(["a", "an", "and", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with"]);
+  return s
+    .trim()
+    .split(/\s+/)
+    .map((w, i) => {
+      const c = w.toLowerCase();
+      return i && small.has(c) ? c : c[0].toUpperCase() + c.slice(1);
+    })
+    .join(" ");
 }
 
 function isGenericTitle(t) {
   const x = cleanText(t).toLowerCase();
-  return ["read more","event details","learn more","details","view event"].includes(x);
+  return ["read more", "event details", "learn more", "details", "view event"].includes(x);
 }
 
 function apDateFromYMD(ymd) {
-  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd||""); if(!m)return null;
-  const dt=new Date(Date.UTC(+m[1],+m[2]-1,+m[3])); if(isNaN(dt))return null;
-  const dts=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  const mos=["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
+  if (!m) return null;
+
+  const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (isNaN(dt)) return null;
+
+  const dts = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const mos = ["Jan.", "Feb.", "March", "April", "May", "June", "July", "Aug.", "Sept.", "Oct.", "Nov.", "Dec."];
   return `${dts[dt.getUTCDay()]}, ${mos[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
 }
 
-function truncate(s,max=260){
-  const x=cleanText(s);
-  return x.length<=max ? x : x.slice(0,max-1).trimEnd()+"…";
+function truncate(s, max = 260) {
+  const x = cleanText(s);
+  return x.length <= max ? x : x.slice(0, max - 1).trimEnd() + "…";
 }
 
-function inferPriceFromText(t){
-  t=cleanText(t).toLowerCase();
-  if(!t) return null;
-  return ["free","no cover","complimentary"].some(x=>t.includes(x)) ? "Free." : null;
+function inferPriceFromText(t) {
+  t = cleanText(t).toLowerCase();
+  if (!t) return null;
+  return ["free", "no cover", "complimentary"].some((x) => t.includes(x)) ? "Free." : null;
+}
+
+function ymdFromISO(iso) {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(iso || "");
+  return m ? m[1] : null;
+}
+
+// Time helpers (previously missing)
+function apTimeFromISOClock(iso) {
+  const m = /T(\d{2}):(\d{2})/.exec(iso || "");
+  if (!m) return null;
+
+  let h = parseInt(m[1], 10);
+  const mm = m[2];
+  const ampm = h >= 12 ? "p.m." : "a.m.";
+  h = h % 12;
+  if (h === 0) h = 12;
+
+  return mm === "00" ? `${h} ${ampm}` : `${h}:${mm} ${ampm}`;
+}
+
+function formatTimeRange(startISO, endISO) {
+  const a = apTimeFromISOClock(startISO);
+  const b = apTimeFromISOClock(endISO);
+  if (a && b) return a === b ? a : `${a}–${b}`;
+  return a || b || null;
 }
 
 // -------------------- Geo hints --------------------
@@ -173,7 +217,7 @@ const GEO_HINTS = {
 };
 
 // -------------------- Category classification --------------------
-const TYPE_ALLOW = new Set(["any","art","music","food","wellness","nightlife","movies"]);
+const TYPE_ALLOW = new Set(["any", "art", "music", "food", "wellness", "nightlife", "movies"]);
 
 function classifyTag(title, desc) {
   const t = `${cleanText(title)} ${cleanText(desc)}`.toLowerCase();
@@ -196,36 +240,29 @@ function classifyTag(title, desc) {
 }
 
 // -------------------- Date range overlap --------------------
-function ymdFromISO(iso) {
-  const m = /^(\d{4}-\d{2}-\d{2})/.exec(iso || "");
-  return m ? m[1] : null;
-}
-
 function overlapsRange(evStart, evEnd, qStart, qEnd) {
-  // If query has no range, allow
   if (!qStart && !qEnd) return true;
 
   // If event lacks dates, only include when query has no strict range
   if (!evStart && !evEnd) return false;
 
   const s = evStart || evEnd;
-  const e = evEnd || evStart || evEnd;
+  const e = evEnd || evStart;
 
   if (qStart && e && e < qStart) return false;
   if (qEnd && s && s > qEnd) return false;
   return true;
 }
+
 // -------------------- Weekender formatting --------------------
 function formatWeekender(e) {
   const header = cleanText(titleCase(e.title || "Event"));
-
   const dateLine = cleanText(e.when || "Date and time on website.");
   const details = cleanText(e.details || "Details on website.");
   const price = cleanText(e.price || "Price not provided.");
 
   const contact = cleanText(
-    e.contact ||
-      (e.url ? `For more information visit their website (${e.url}).` : "For more information visit their website.")
+    e.contact || (e.url ? `For more information visit their website (${e.url}).` : "For more information visit their website.")
   );
 
   let address = cleanText(e.address || "Venue address not provided.");
@@ -233,7 +270,7 @@ function formatWeekender(e) {
     address = `${titleCase(e.town.replace("-", " "))}, CA`;
   }
 
-  const geo = e.geo || (GEO_HINTS[(e.town || "").toLowerCase()] || null);
+  const geo = e.geo || GEO_HINTS[(e.town || "").toLowerCase()] || null;
 
   return {
     header,
@@ -254,11 +291,12 @@ async function fetchText(url) {
   try {
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "NapaValleyFeaturesEventFinder/1.2 (+https://napavalleyfeatures.com)",
+        "User-Agent": "NapaValleyFeaturesEventFinder/1.3 (+https://napavalleyfeatures.com)",
         "Accept-Language": "en-US,en;q=0.9",
       },
       signal: controller.signal,
     });
+
     if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
     const txt = await res.text();
     setCached(key, txt);
@@ -298,12 +336,12 @@ async function extractEventFromPage(url, opts = {}) {
   const html = await fetchText(url);
   const $ = load(html);
 
-  let title = null,
-    startISO = null,
-    endISO = null,
-    address = null,
-    description = null,
-    price = null;
+  let title = null;
+  let startISO = null;
+  let endISO = null;
+  let address = null;
+  let description = null;
+  let price = null;
 
   // JSON-LD event (preferred)
   const ld = getJsonLdEvents($);
@@ -336,54 +374,46 @@ async function extractEventFromPage(url, opts = {}) {
   // Price heuristic (safe)
   if (!price) {
     const inf = inferPriceFromText(description || "");
-    if (inf) price = inf;
-    else {
+    if (inf) {
+      price = inf;
+    } else {
       const priceMatch = html.match(/\$\s?\d+(?:\.\d{2})?|\bfree\b/i);
       if (priceMatch) {
-        price = /free/i.test(priceMatch[0])
-          ? "Free."
-          : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
+        price = /free/i.test(priceMatch[0]) ? "Free." : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
       }
     }
-    // Date + time formatting
-let dateISO = null, when = null;
-
-const startYMD = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "")?.[1] || null;
-const endYMD = /^(\d{4}-\d{2}-\d{2})/.exec(endISO || "")?.[1] || null;
-
-if (startYMD) {
-  dateISO = startYMD;
-
-  // If the event spans multiple dates, show a clear run range.
-  if (endYMD && endYMD !== startYMD) {
-    const apStart = apDateFromYMD(startYMD);
-    const apEnd = apDateFromYMD(endYMD);
-
-    // Do NOT append a time for multi-day runs unless you truly have an explicit time.
-    when = apStart && apEnd ? `Runs ${apStart}–${apEnd}` : "Dates and times on website.";
-  } else {
-    // Single-day: show date + time if available
-    const ap = apDateFromYMD(startYMD);
-    const t = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
-    when = ap ? (t ? `${ap}, ${t}` : ap) : null;
-  }
-}
-
   }
 
-  const startYMD = ymdFromISO(startISO);
-  const endYMD = ymdFromISO(endISO) || startYMD;
+  // Date + time formatting (safe)
+  let when = null;
+  const startYMD2 = ymdFromISO(startISO);
+  const endYMD2 = ymdFromISO(endISO);
+
+  if (startYMD2) {
+    if (endYMD2 && endYMD2 !== startYMD2) {
+      const apStart = apDateFromYMD(startYMD2);
+      const apEnd = apDateFromYMD(endYMD2);
+      when = apStart && apEnd ? `Runs ${apStart}–${apEnd}` : "Dates and times on website.";
+    } else {
+      const ap = apDateFromYMD(startYMD2);
+      const t = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
+      when = ap ? (t ? `${ap}, ${t}` : ap) : null;
+    }
+  }
+
+  const startYMD = startYMD2;
+  const endYMD = endYMD2 || startYMD2;
 
   let details = description ? truncate(description) : "Details on website.";
   if (details && !details.endsWith(".")) details += ".";
 
   const tag = classifyTag(title, description || details);
-
-  const geo = (!opts.skipGeo && opts.town && GEO_HINTS[opts.town.toLowerCase()]) ? GEO_HINTS[opts.town.toLowerCase()] : null;
+  const geo = !opts.skipGeo && opts.town && GEO_HINTS[opts.town.toLowerCase()] ? GEO_HINTS[opts.town.toLowerCase()] : null;
 
   return {
     title,
     url,
+    when,
     startYMD,
     endYMD,
     details,
@@ -405,11 +435,12 @@ async function extractOrFallback(url, title, opts = {}) {
     if (!title || isGenericTitle(title)) return null;
 
     const tag = classifyTag(title, "");
-    const geo = (!opts.skipGeo && opts.town && GEO_HINTS[opts.town.toLowerCase()]) ? GEO_HINTS[opts.town.toLowerCase()] : null;
+    const geo = !opts.skipGeo && opts.town && GEO_HINTS[opts.town.toLowerCase()] ? GEO_HINTS[opts.town.toLowerCase()] : null;
 
     return {
       title,
       url,
+      when: null,
       startYMD: null,
       endYMD: null,
       details: "Details on website.",
@@ -429,21 +460,17 @@ function filterAndRank(rawEvents, f = {}) {
   for (const e of rawEvents) {
     if (!e) continue;
 
-    // Town filter
     if (f.town && f.town !== "all" && e.town && e.town !== f.town) continue;
 
-    // Type filter (category)
     if (f.type && f.type !== "any") {
       if ((e.tag || "any") !== f.type) continue;
     }
 
-    // Date-range overlap
     if (!overlapsRange(e.startYMD, e.endYMD, f.startISO, f.endISO)) continue;
 
     out.push(e);
   }
 
-  // Sort upcoming (ascending by start date when present)
   out.sort((a, b) => {
     const aa = a.startYMD || "9999-12-31";
     const bb = b.startYMD || "9999-12-31";
@@ -451,6 +478,28 @@ function filterAndRank(rawEvents, f = {}) {
   });
 
   return out.map(formatWeekender);
+}
+
+// -------------------- Small concurrency limiter --------------------
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let i = 0;
+
+  async function worker() {
+    while (true) {
+      const idx = i++;
+      if (idx >= items.length) return;
+      try {
+        results[idx] = await fn(items[idx], idx);
+      } catch {
+        results[idx] = null;
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.max(1, limit) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }
 
 /* -------------------- Parsers -------------------- */
@@ -466,12 +515,13 @@ async function parseDoNapa(listUrl, f) {
     if (full.includes("donapa.com/event/")) urls.add(full);
   });
 
-  const events = [];
-  for (const url of Array.from(urls).slice(0, 12)) {
-    const ev = await extractOrFallback(url, null, { town: "napa" });
-    if (ev) events.push(ev);
-  }
+  const urlList = Array.from(urls).slice(0, 12);
 
+  const extracted = await mapLimit(urlList, 4, async (url) => {
+    return await extractOrFallback(url, null, { town: "napa" });
+  });
+
+  const events = extracted.filter(Boolean);
   return filterAndRank(events, f);
 }
 
@@ -497,12 +547,11 @@ async function parseGrowthZone(listUrl, townSlug, f) {
     if (uniq.length >= 12) break;
   }
 
-  const events = [];
-  for (const x of uniq) {
-    const ev = await extractOrFallback(x.url, x.title, { town: townSlug });
-    if (ev) events.push(ev);
-  }
+  const extracted = await mapLimit(uniq, 4, async (x) => {
+    return await extractOrFallback(x.url, x.title, { town: townSlug });
+  });
 
+  const events = extracted.filter(Boolean);
   return filterAndRank(events, f);
 }
 
@@ -528,12 +577,11 @@ async function parseNapaLibrary(listUrl, f) {
     if (uniq.length >= 12) break;
   }
 
-  const events = [];
-  for (const x of uniq) {
-    const ev = await extractOrFallback(x.url, x.title, { town: "all" });
-    if (ev) events.push(ev);
-  }
+  const extracted = await mapLimit(uniq, 4, async (x) => {
+    return await extractOrFallback(x.url, x.title, { town: "all" });
+  });
 
+  const events = extracted.filter(Boolean);
   return filterAndRank(events, f);
 }
 
@@ -559,12 +607,11 @@ async function parseVisitNapaValley(listUrl, f) {
     if (uniq.length >= 12) break;
   }
 
-  const events = [];
-  for (const x of uniq) {
-    const ev = await extractOrFallback(x.url, x.title, { town: "all" });
-    if (ev) events.push(ev);
-  }
+  const extracted = await mapLimit(uniq, 4, async (x) => {
+    return await extractOrFallback(x.url, x.title, { town: "all" });
+  });
 
+  const events = extracted.filter(Boolean);
   return filterAndRank(events, f);
 }
 
@@ -573,22 +620,21 @@ async function parseCameo(listUrl, f) {
   const $ = load(html);
 
   const titles = [];
-  $("h2,h3").each((_, el) => {
+  $("h1,h2,h3").each((_, el) => {
     const t = cleanText($(el).text());
-    if (t && t.length > 2 && t.length < 80) titles.push(t);
+    if (t && t.length > 2 && t.length < 90) titles.push(t);
   });
 
-  const today = toISODate(new Date());
-
   const events = [];
-  for (const t of titles.slice(0, 10)) {
-    if (isGenericTitle(t) || /cameo|movie times/i.test(t)) continue;
+  for (const t of titles.slice(0, 12)) {
+    if (isGenericTitle(t) || /cameo|movie times|showtimes/i.test(t)) continue;
 
     events.push({
       title: t,
       url: listUrl,
-      startYMD: today,
-      endYMD: today,
+      when: "Showtimes on website.",
+      startYMD: null,
+      endYMD: null,
       details: "Now playing. Showtimes on website.",
       price: "Price not provided.",
       address: "1340 Main St., St. Helena.",
@@ -660,9 +706,7 @@ export default async function handler(req, res) {
     } catch {
       timedOut = true;
       const settled = await Promise.allSettled(tasks);
-      resultsArrays = settled
-        .filter((r) => r.status === "fulfilled")
-        .map((r) => r.value || []);
+      resultsArrays = settled.filter((r) => r.status === "fulfilled").map((r) => r.value || []);
     }
 
     // Flatten + dedupe
@@ -678,8 +722,10 @@ export default async function handler(req, res) {
       dedup.push(x);
     }
 
-    // Map pins (always, when possible)
-    const mapData = dedup
+    const sliced = dedup.slice(0, limit);
+
+    // Map pins
+    const mapData = sliced
       .map((x) => {
         if (x.geo && typeof x.geo.lat === "number" && typeof x.geo.lon === "number") {
           return { name: x.header, lat: x.geo.lat, lon: x.geo.lon };
@@ -693,8 +739,8 @@ export default async function handler(req, res) {
     sendJson(req, res, 200, {
       ok: true,
       timeout: timedOut,
-      count: dedup.slice(0, limit).length,
-      results: dedup.slice(0, limit).map((x) => ({
+      count: sliced.length,
+      results: sliced.map((x) => ({
         header: x.header,
         body: x.body,
         geo: x.geo ? { lat: x.geo.lat, lon: x.geo.lon } : null,

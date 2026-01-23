@@ -55,8 +55,7 @@
       margin: 0 0 6px 0;
     }
     select,
-    input,
-    textarea {
+    input {
       width: 100%;
       padding: 10px 10px;
       border: 1px solid var(--border);
@@ -139,6 +138,13 @@
       margin-top: 1rem;
       border-radius: 8px;
       overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .map-empty {
+      color: #6b7280;
+      font-size: 13px;
+      margin: 0;
+      padding: 10px;
     }
   </style>
 </head>
@@ -188,7 +194,9 @@
 
       <div class="row">
         <button id="search">Search</button>
-        <span class="hint">Returns up to 5 results in Weekender-style formatting.</span>
+        <button id="more" class="secondary" style="display:none;">Show more</button>
+        <button id="copy" class="secondary" disabled>Copy results</button>
+        <span class="hint">Shows 5 results by default. Use Show more to expand to 10.</span>
       </div>
 
       <div class="chips" id="sources"></div>
@@ -211,10 +219,13 @@
       const $ = (id) => document.getElementById(id);
 
       // API base resolution rules:
-      // 1) If widget is embedded and host page sets window.NVF_API_BASE, use it
+      // 1) If host page sets window.NVF_API_BASE, use it
       // 2) Otherwise default to this page's origin (works when widget.html is served from Vercel)
-      // 3) If this is running on squarespace.com without NVF_API_BASE, fail with a clear message
+      // 3) If running on squarespace.com without NVF_API_BASE, fail with a clear message
       const API_BASE = (window.NVF_API_BASE || "").trim() || window.location.origin;
+
+      let currentLimit = 5;
+      const MAX_LIMIT = 10;
 
       function showError(msg) {
         const el = $("err");
@@ -285,9 +296,22 @@
         } catch (_) {}
       }
 
+      function getCopyTextFromRenderedResults() {
+        const blocks = [];
+        document.querySelectorAll("#results .event").forEach((node) => {
+          const h = node.querySelector("h3")?.innerText?.trim() || "";
+          const p = node.querySelector("p")?.innerText?.trim() || "";
+          if (h) blocks.push(h);
+          if (p) blocks.push(p);
+          blocks.push("");
+        });
+        return blocks.join("\n").trim();
+      }
+
       function render(results) {
         const wrap = $("results");
         wrap.innerHTML = "";
+
         results.forEach((item) => {
           const div = document.createElement("div");
           div.className = "card event";
@@ -300,6 +324,19 @@
           `;
           wrap.appendChild(div);
         });
+
+        $("copy").disabled = results.length === 0;
+
+        // Show more button logic
+        const moreBtn = $("more");
+        if (currentLimit < MAX_LIMIT && results.length >= currentLimit) {
+          moreBtn.style.display = "inline-block";
+          moreBtn.disabled = false;
+          const next = Math.min(MAX_LIMIT, currentLimit + 5);
+          moreBtn.textContent = `Show more (${next} total)`;
+        } else {
+          moreBtn.style.display = "none";
+        }
       }
 
       // Leaflet map guard: destroy previous map instance before re-initializing
@@ -317,7 +354,7 @@
         resetMap();
 
         if (!window.L || !points || !points.length) {
-          mapDiv.innerHTML = '<p style="color:#6b7280;font-size:13px;margin:0;padding:10px;">No map data available for this search.</p>';
+          mapDiv.innerHTML = '<p class="map-empty">No map data available for this search.</p>';
           return;
         }
 
@@ -340,8 +377,6 @@
       async function search() {
         clearError();
 
-        // If this is running on Squarespace directly without NVF_API_BASE, the API_BASE will be squarespace.com
-        // Fail early with a clear message rather than a confusing fetch failure.
         if (/squarespace\.com$/i.test(window.location.hostname) && !window.NVF_API_BASE) {
           showError("Configuration error: window.NVF_API_BASE is not set. Set it in Squarespace Code Injection (Header).");
           return;
@@ -361,11 +396,19 @@
           $("end").value = end;
         }
 
-        const qs = new URLSearchParams({ town, type, start, end, limit: "5" }).toString();
+        const qs = new URLSearchParams({
+          town,
+          type,
+          start,
+          end,
+          limit: String(currentLimit)
+        }).toString();
+
         const url = API_BASE + "/api/search?" + qs;
 
         $("search").textContent = "Searching…";
         $("search").disabled = true;
+        $("more").disabled = true;
 
         try {
           const r = await fetch(url, { cache: "no-store" });
@@ -389,7 +432,34 @@
         }
       }
 
-      $("search").addEventListener("click", search);
+      // Buttons
+      $("search").addEventListener("click", () => {
+        currentLimit = Math.min(currentLimit, MAX_LIMIT);
+        search();
+      });
+
+      $("more").addEventListener("click", () => {
+        currentLimit = Math.min(MAX_LIMIT, currentLimit + 5);
+        search();
+      });
+
+      $("copy").addEventListener("click", async () => {
+        try {
+          const txt = getCopyTextFromRenderedResults();
+          if (!txt) return;
+          await navigator.clipboard.writeText(txt);
+          $("copy").textContent = "Copied";
+          setTimeout(() => ($("copy").textContent = "Copy results"), 1200);
+        } catch (_) {}
+      });
+
+      // Reset to 5 when filters change
+      ["town", "type", "start", "end"].forEach((id) => {
+        $(id).addEventListener("change", () => {
+          currentLimit = 5;
+          $("more").style.display = "none";
+        });
+      });
 
       setDefaultDates();
       loadSources();

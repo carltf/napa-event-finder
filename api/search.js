@@ -207,6 +207,23 @@ function formatTimeRange(startISO, endISO) {
   return a || b || null;
 }
 
+function normalizeExcerpt(s) {
+  let x = cleanText(s || "");
+
+  // If the source ends with "..." or "…", remove it and end cleanly.
+  x = x.replace(/\s*(\.\.\.|…)\s*$/g, "");
+
+  // Some sources include " ... " in the middle as a truncation marker.
+  // If it appears right before we append our own fields, it reads badly.
+  // Remove " ... " when it ends the excerpt.
+  x = x.replace(/\s+\.\.\.\s*$/g, "");
+
+  // Ensure we end with a period if there is any content.
+  if (x && !/[.!?]$/.test(x)) x += ".";
+
+  return x;
+}
+
 // -------------------- Geo hints --------------------
 const GEO_HINTS = {
   napa: { lat: 38.2975, lon: -122.2869 },
@@ -258,7 +275,7 @@ function overlapsRange(evStart, evEnd, qStart, qEnd) {
 function formatWeekender(e) {
   const header = cleanText(titleCase(e.title || "Event"));
   const dateLine = cleanText(e.when || "Date and time on website.");
-  const details = cleanText(e.details || "Details on website.");
+  const details = normalizeExcerpt(e.details || "Details on website.");
   const price = cleanText(e.price || "Price not provided.");
 
   const contact = cleanText(
@@ -404,8 +421,8 @@ async function extractEventFromPage(url, opts = {}) {
   const startYMD = startYMD2;
   const endYMD = endYMD2 || startYMD2;
 
-  let details = description ? truncate(description) : "Details on website.";
-  if (details && !details.endsWith(".")) details += ".";
+let details = description ? truncate(description) : "Details on website.";
+details = normalizeExcerpt(details);
 
   const tag = classifyTag(title, description || details);
   const geo = !opts.skipGeo && opts.town && GEO_HINTS[opts.town.toLowerCase()] ? GEO_HINTS[opts.town.toLowerCase()] : null;

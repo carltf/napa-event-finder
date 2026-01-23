@@ -1,115 +1,419 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Napa Valley Event Finder</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Napa Valley Event Finder</title>
+
+  <!-- Leaflet CSS (safe in standalone/iframe mode) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
   <style>
+    :root {
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --bg: #ffffff;
+      --chip: #f3f4f6;
+    }
     body {
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       margin: 0;
-      padding: 1.5rem;
-      color: #222;
-      background: #fff;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 18px;
     }
     h1 {
-      font-size: 1.5rem;
-      margin-bottom: 1rem;
+      font-size: 22px;
+      margin: 0 0 12px 0;
     }
-    form {
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+      background: #fff;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    @media (min-width: 820px) {
+      .grid {
+        grid-template-columns: repeat(4, 1fr);
+      }
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 6px 0;
+    }
+    select,
+    input,
+    textarea {
+      width: 100%;
+      padding: 10px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 14px;
+      background: #fff;
+      box-sizing: border-box;
+    }
+    .row {
       display: flex;
+      gap: 10px;
+      align-items: center;
       flex-wrap: wrap;
-      gap: 0.5rem;
-      margin-bottom: 1rem;
-    }
-    select, input[type="date"], button {
-      padding: 0.5rem;
-      font-size: 0.95rem;
+      margin-top: 10px;
     }
     button {
-      background: #111;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #111827;
       color: #fff;
-      border: none;
       cursor: pointer;
-      border-radius: 0.25rem;
-      padding: 0.5rem 1rem;
+      font-weight: 600;
     }
-    button:hover { background: #333; }
-    #results { margin-top: 1rem; line-height: 1.4; }
-    .event {
-      border-bottom: 1px solid #ddd;
-      padding: 0.5rem 0;
+    button.secondary {
+      background: #fff;
+      color: #111827;
     }
-    .header { font-weight: 600; }
-    .body { margin-top: 0.25rem; color: #555; }
-    small { color: #777; }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    .results {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .event h3 {
+      margin: 0 0 6px 0;
+      font-size: 16px;
+    }
+    .event p {
+      margin: 0;
+      line-height: 1.35;
+    }
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .chip {
+      background: var(--chip);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #374151;
+    }
+    .error {
+      color: #b91c1c;
+      font-size: 13px;
+      margin-top: 10px;
+      display: none;
+    }
+    .footer-note {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 20px;
+      text-align: left;
+    }
+    #mapContainer {
+      height: 320px;
+      margin-top: 1rem;
+      border-radius: 8px;
+      overflow: hidden;
+    }
   </style>
 </head>
+
 <body>
-  <h1>Napa Valley Event Finder</h1>
+  <div class="wrap">
+    <h1>Napa Valley Event Finder</h1>
 
-  <form id="searchForm">
-    <select id="town">
-      <option value="all">All Napa County</option>
-      <option value="napa">Napa</option>
-      <option value="yountville">Yountville</option>
-      <option value="st-helena">St. Helena</option>
-      <option value="calistoga">Calistoga</option>
-      <option value="american-canyon">American Canyon</option>
-    </select>
+    <div class="card">
+      <div class="grid">
+        <div>
+          <label for="town">Town</label>
+          <select id="town">
+            <option value="all">All Napa County</option>
+            <option value="napa">Napa</option>
+            <option value="yountville">Yountville</option>
+            <option value="st-helena">St. Helena</option>
+            <option value="calistoga">Calistoga</option>
+            <option value="american-canyon">American Canyon</option>
+          </select>
+        </div>
 
-    <select id="type">
-      <option value="any">Any event</option>
-      <option value="movies">Movies</option>
-    </select>
+        <div>
+          <label for="type">Type</label>
+          <select id="type">
+            <option value="any">Any event</option>
+            <option value="art">Art & Exhibits</option>
+            <option value="music">Live Music</option>
+            <option value="food">Food & Culinary</option>
+            <option value="wine">Wine & Tastings</option>
+            <option value="community">Community & Family</option>
+            <option value="theatre">Theatre & Performance</option>
+            <option value="movies">Movies</option>
+          </select>
+        </div>
 
-    <input type="date" id="start" />
-    <input type="date" id="end" />
-    <button type="submit">Search</button>
-  </form>
+        <div>
+          <label for="start">Start date</label>
+          <input type="date" id="start" />
+        </div>
 
-  <small>Returns up to 5 results in Weekender-style formatting.</small>
-  <div id="results"></div>
+        <div>
+          <label for="end">End date</label>
+          <input type="date" id="end" />
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="search">Search</button>
+        <button id="copy" class="secondary" disabled>Copy results</button>
+        <span class="hint">Returns up to 5 results in Weekender-style formatting.</span>
+      </div>
+
+      <div class="chips" id="sources"></div>
+      <div id="err" class="error"></div>
+      <div class="results" id="results"></div>
+
+      <div id="mapContainer"></div>
+
+      <div id="copyBlock" style="display:none; margin-top:12px;">
+        <label for="copyText">Copy/paste text</label>
+        <textarea id="copyText" readonly rows="7"></textarea>
+      </div>
+
+      <div class="footer-note">
+        Note: Results are pulled from a curated set of Napa Valley calendars and venues. Always confirm details on the original event website.
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaflet JS (safe in standalone/iframe mode) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
-    async function fetchEvents(params) {
-      const q = new URLSearchParams(params).toString();
-      const res = await fetch(`/api/search?${q}`);
-      if (!res.ok) throw new Error("Fetch failed");
-      return res.json();
-    }
+    (function () {
+      const $ = (id) => document.getElementById(id);
 
-    const form = document.getElementById("searchForm");
-    const resultsDiv = document.getElementById("results");
+      // API base resolution rules:
+      // 1) If widget is embedded and host page sets window.NVF_API_BASE, use it
+      // 2) Otherwise default to this page's origin (works when widget.html is served from Vercel)
+      // 3) If this is running on squarespace.com without NVF_API_BASE, fail with a clear message
+      const API_BASE = (window.NVF_API_BASE || "").trim() || window.location.origin;
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      resultsDiv.textContent = "Loading events…";
-      const params = {
-        town: form.town.value,
-        type: form.type.value,
-        start: form.start.value,
-        end: form.end.value,
-        limit: 5
-      };
+      function showError(msg) {
+        const el = $("err");
+        el.style.display = "block";
+        el.textContent = msg;
+      }
+      function clearError() {
+        const el = $("err");
+        el.style.display = "none";
+        el.textContent = "";
+      }
 
-      try {
-        const data = await fetchEvents(params);
-        if (!data || !data.results || !data.results.length) {
-          resultsDiv.textContent = "No events found for that range.";
+      function escapeHtml(s) {
+        return String(s || "").replace(/[&<>'"]/g, (c) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          "'": "&#39;",
+          '"': "&quot;",
+        }[c]));
+      }
+
+      function normalizeDateInput(val) {
+        const v = (val || "").trim();
+        const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v);
+        if (!m) return v;
+        const mm = m[1].padStart(2, "0");
+        const dd = m[2].padStart(2, "0");
+        const yy = m[3];
+        return `${yy}-${mm}-${dd}`;
+      }
+
+      function ymdToNumber(ymd) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
+        if (!m) return null;
+        return +m[1] * 10000 + +m[2] * 100 + +m[3];
+      }
+
+      function setDefaultDates() {
+        const today = new Date();
+        const toYMD = (d) => {
+          const yyyy = d.getFullYear();
+          const mm = String(d.getMonth() + 1).padStart(2, "0");
+          const dd = String(d.getDate()).padStart(2, "0");
+          return `${yyyy}-${mm}-${dd}`;
+        };
+        if (!$("start").value) $("start").value = toYMD(today);
+        if (!$("end").value) {
+          const end = new Date(today);
+          end.setDate(end.getDate() + 14);
+          $("end").value = toYMD(end);
+        }
+      }
+
+      async function loadSources() {
+        try {
+          const r = await fetch(API_BASE + "/sources.json", { cache: "no-store" });
+          if (!r.ok) return;
+          const sources = await r.json();
+          const el = $("sources");
+          el.innerHTML = "";
+          sources.forEach((s) => {
+            const chip = document.createElement("span");
+            chip.className = "chip";
+            chip.textContent = s.name;
+            el.appendChild(chip);
+          });
+        } catch (_) {}
+      }
+
+      function render(results) {
+        const wrap = $("results");
+        wrap.innerHTML = "";
+        const copyLines = [];
+        results.forEach((item) => {
+          const div = document.createElement("div");
+          div.className = "card event";
+          div.innerHTML = `
+            <h3>${escapeHtml(item.header)}</h3>
+            <p>${escapeHtml(item.body).replace(
+              /(https?:\/\/[^\s)]+)/g,
+              '<a href="$1" target="_blank" rel="noopener">$1</a>'
+            )}</p>
+          `;
+          wrap.appendChild(div);
+          copyLines.push(item.header, item.body, "");
+        });
+
+        $("copy").disabled = results.length === 0;
+        $("copyBlock").style.display = results.length ? "block" : "none";
+        $("copyText").value = copyLines.join("\n").trim();
+      }
+
+      // Leaflet map guard: destroy previous map instance before re-initializing
+      function resetMap() {
+        const mapDiv = $("mapContainer");
+        if (mapDiv.__leaflet_map__) {
+          try { mapDiv.__leaflet_map__.remove(); } catch (_) {}
+          mapDiv.__leaflet_map__ = null;
+        }
+        mapDiv.innerHTML = "";
+      }
+
+      function drawMap(points) {
+        const mapDiv = $("mapContainer");
+        resetMap();
+
+        if (!window.L || !points || !points.length) {
+          mapDiv.innerHTML = '<p style="color:#6b7280;font-size:13px;margin:0;padding:10px;">No map data available for this search.</p>';
           return;
         }
-        resultsDiv.innerHTML = data.results.map(ev => `
-          <div class="event">
-            <div class="header">${ev.header}</div>
-            <div class="body">${ev.body}</div>
-          </div>
-        `).join("");
-      } catch (err) {
-        console.error(err);
-        resultsDiv.textContent = "Error loading events.";
+
+        const first = points[0];
+        const map = L.map(mapDiv).setView([first.lat, first.lon], 10);
+        mapDiv.__leaflet_map__ = map;
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 17,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+        }).addTo(map);
+
+        points.forEach((pt) => {
+          if (typeof pt.lat === "number" && typeof pt.lon === "number") {
+            L.marker([pt.lat, pt.lon]).addTo(map).bindPopup(escapeHtml(pt.name || ""));
+          }
+        });
       }
-    });
+
+      async function search() {
+        clearError();
+
+        // If this is running on Squarespace directly without NVF_API_BASE, the API_BASE will be squarespace.com
+        // Fail early with a clear message rather than a confusing fetch failure.
+        if (/squarespace\.com$/i.test(window.location.hostname) && !window.NVF_API_BASE) {
+          showError("Configuration error: window.NVF_API_BASE is not set. Set it in Squarespace Code Injection (Header).");
+          return;
+        }
+
+        const town = $("town").value;
+        const type = $("type").value;
+
+        let start = normalizeDateInput($("start").value);
+        let end = normalizeDateInput($("end").value);
+
+        const sNum = ymdToNumber(start);
+        const eNum = ymdToNumber(end);
+        if (sNum && eNum && sNum > eNum) {
+          const tmp = start; start = end; end = tmp;
+          $("start").value = start;
+          $("end").value = end;
+        }
+
+        const qs = new URLSearchParams({ town, type, start, end, limit: "5" }).toString();
+        const url = API_BASE + "/api/search?" + qs;
+
+        $("search").textContent = "Searching…";
+        $("search").disabled = true;
+
+        try {
+          const r = await fetch(url, { cache: "no-store" });
+          const data = await r.json().catch(() => null);
+          if (!r.ok || !data || !data.ok) throw new Error("Search failed.");
+
+          const results = data.results || [];
+          render(results);
+
+          const pts = (data.map || []).filter(p => p && typeof p.lat === "number" && typeof p.lon === "number");
+          drawMap(pts);
+
+          if (results.length === 0) {
+            showError("No matches found for that filter. Try expanding the date range or choosing All Napa County.");
+          }
+        } catch (e) {
+          showError("Could not load results. " + (e.message || e));
+        } finally {
+          $("search").textContent = "Search";
+          $("search").disabled = false;
+        }
+      }
+
+      $("search").addEventListener("click", search);
+
+      $("copy").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText($("copyText").value);
+          $("copy").textContent = "Copied";
+          setTimeout(() => ($("copy").textContent = "Copy results"), 1200);
+        } catch (_) {}
+      });
+
+      setDefaultDates();
+      loadSources();
+    })();
   </script>
 </body>
 </html>

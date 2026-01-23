@@ -87,12 +87,37 @@ const SOURCES = [
 
 // -------------------- Utilities --------------------
 function decodeEntities(str) {
-  const s = String(str || "");
-  const numeric = s
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)));
-  const named = { "&amp;": "&", "&quot;": '"', "&apos;": "'", "&lt;": "<", "&gt;": ">", "&nbsp;": " " };
-  return numeric.replace(/&(amp|quot|apos|lt|gt|nbsp);/g, (m) => named[m] || m);
+  let s = String(str || "");
+
+  // Some sources double-encode, e.g. "&amp;#038;" -> "&#038;" -> "&"
+  // Run a couple passes until stable (bounded to avoid loops).
+  for (let i = 0; i < 3; i++) {
+    const before = s;
+
+    // Decode named entities first (so "&amp;#038;" becomes "&#038;")
+    const named = {
+      "&amp;": "&",
+      "&quot;": '"',
+      "&apos;": "'",
+      "&lt;": "<",
+      "&gt;": ">",
+      "&nbsp;": " ",
+    };
+    s = s.replace(/&(amp|quot|apos|lt|gt|nbsp);/g, (m) => named[m] || m);
+
+    // Decode numeric entities next
+    s = s
+      .replace(/&#(\d+);/g, (_, n) => {
+        try { return String.fromCodePoint(+n); } catch { return _; }
+      })
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => {
+        try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _; }
+      });
+
+    if (s === before) break;
+  }
+
+  return s;
 }
 function cleanText(s) { return decodeEntities(String(s || "")).replace(/\s+/g, " ").trim(); }
 function toISODate(d) { return d.toISOString().slice(0, 10); }
@@ -193,16 +218,30 @@ function overlapsRange(evStart, evEnd, qStart, qEnd) {
 
 // -------------------- Weekender formatting --------------------
 function formatWeekender(e) {
-  const header = titleCase(e.title || "Event");
+  const header = cleanText(titleCase(e.title || "Event"));
 
-  let dateLine = "Date and time on website.";
-  if (e.startYMD && e.endYMD && e.endYMD !== e.startYMD) {
-    const a = apDateFromYMD(e.startYMD);
-    const b = apDateFromYMD(e.endYMD);
-    dateLine = a && b ? `Runs ${a}–${b}.` : `Runs ${e.startYMD}–${e.endYMD}.`;
-  } else if (e.startYMD) {
-    const a = apDateFromYMD(e.startYMD);
-    dateLine = a ? `${a}.` : `${e.startYMD}.`;
+  const dateLine = cleanText(e.when || "Date and time on website.");
+  const details = cleanText(e.details || "Details on website.");
+  const price = cleanText(e.price || "Price not provided.");
+
+  const contact = cleanText(
+    e.contact ||
+      (e.url ? `For more information visit their website (${e.url}).` : "For more information visit their website.")
+  );
+
+  let address = cleanText(e.address || "Venue address not provided.");
+  if (address === "Venue address not provided." && e.town && e.town !== "all") {
+    address = `${titleCase(e.town.replace("-", " "))}, CA`;
+  }
+
+  const geo = e.geo || (GEO_HINTS[(e.town || "").toLowerCase()] || null);
+
+  return {
+    header,
+    body: cleanText(`${dateLine} ${details} ${price} ${contact} ${address}`),
+    geo,
+  };
+}
   }
 
   const details = e.details || "Details on website.";
@@ -329,6 +368,30 @@ async function extractEventFromPage(url, opts = {}) {
           : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
       }
     }
+    // Date + time formatting
+let dateISO = null, when = null;
+
+const startYMD = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "")?.[1] || null;
+const endYMD = /^(\d{4}-\d{2}-\d{2})/.exec(endISO || "")?.[1] || null;
+
+if (startYMD) {
+  dateISO = startYMD;
+
+  // If the event spans multiple dates, show a clear run range.
+  if (endYMD && endYMD !== startYMD) {
+    const apStart = apDateFromYMD(startYMD);
+    const apEnd = apDateFromYMD(endYMD);
+
+    // Do NOT append a time for multi-day runs unless you truly have an explicit time.
+    when = apStart && apEnd ? `Runs ${apStart}–${apEnd}` : "Dates and times on website.";
+  } else {
+    // Single-day: show date + time if available
+    const ap = apDateFromYMD(startYMD);
+    const t = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
+    when = ap ? (t ? `${ap}, ${t}` : ap) : null;
+  }
+}
+
   }
 
   const startYMD = ymdFromISO(startISO);

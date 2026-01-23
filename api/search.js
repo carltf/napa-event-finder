@@ -346,22 +346,23 @@ async function extractEventFromPage(url, opts = {}) {
   }
 
   // Supplemental time heuristic (do NOT force midnight)
-  if (!startISO) {
-    const timeMatch = html.match(
-      /\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i
-    );
-    if (timeMatch) {
-      const hour = parseInt(timeMatch[1], 10);
-      const minute = timeMatch[2] || "00";
-      const ampm = timeMatch[5].toLowerCase();
-      const isoHour =
-        ampm.includes("p") && hour < 12 ? hour + 12 :
-        ampm.includes("a") && hour === 12 ? 0 :
-        hour % 12;
-      startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
-    } else {
-      startISO = null;
-    }
+if (!startISO) {
+  const timeMatch = html.match(
+    /\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i
+  );
+
+  if (timeMatch) {
+    const hour = parseInt(timeMatch[1], 10);
+    const minute = timeMatch[2] || "00";
+    const ampm = timeMatch[5].toLowerCase();
+
+    let isoHour = hour % 12;
+    if (ampm.includes("p")) isoHour += 12;
+
+    startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
+  } else {
+    startISO = null;
+  }
   }
 
   // Supplemental price heuristic

@@ -152,18 +152,53 @@ function apDateFromYMD(ymd) {
   const mos=["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
   return `${dts[dt.getUTCDay()]}, ${mos[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
 }
-
 function apTimeFromISOClock(iso) {
   if (!iso) return null;
-  if (/T00:00(:00)?/.test(iso)) return null;
+
+  // If it's date-only, there is no time.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+
+  // Suppress explicit midnight placeholders like T00:00 or T00:00:00
+  if (/T00:00(?::00)?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/.test(iso)) return null;
+
+  const hasTZ = /(?:Z|[+-]\d{2}:\d{2})$/.test(iso);
+
+  // If the timestamp includes a timezone, format it in America/Los_Angeles.
+  if (hasTZ) {
+    const d = new Date(iso);
+    if (!isNaN(d)) {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Los_Angeles",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }).formatToParts(d);
+
+      const hour = (parts.find(p => p.type === "hour")?.value || "").trim();
+      const minute = (parts.find(p => p.type === "minute")?.value || "").trim();
+      const dayPeriod = (parts.find(p => p.type === "dayPeriod")?.value || "").toLowerCase();
+
+      if (!hour || !minute || !dayPeriod) return null;
+
+      const apPeriod = dayPeriod === "pm" ? "p.m." : "a.m.";
+      return minute === "00" ? `${hour} ${apPeriod}` : `${hour}:${minute} ${apPeriod}`;
+    }
+  }
+
+  // Otherwise treat as a "floating" local clock time (no timezone info supplied).
   const m = /T(\d{2}):(\d{2})/.exec(iso);
   if (!m) return null;
 
-  const hour = +m[1];
+  const hour24 = +m[1];
   const minute = +m[2];
-  const h = hour % 12 || 12;
-  const ampm = hour >= 12 ? "p.m." : "a.m.";
-  return `${h}${minute ? ":" + String(minute).padStart(2, "0") : ""} ${ampm}`;
+
+  // Optional: if a site uses very-early times as placeholders, you can suppress them here.
+  // I’m NOT doing that by default because it can hide legitimate events.
+  // if (hour24 === 0) return null;
+
+  let h = hour24 % 12 || 12;
+  const ampm = hour24 >= 12 ? "p.m." : "a.m.";
+  return minute ? `${h}:${String(minute).padStart(2, "0")} ${ampm}` : `${h} ${ampm}`;
 }
 
 function formatTimeRange(a,b){

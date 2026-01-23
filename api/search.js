@@ -2,8 +2,19 @@ import * as cheerioNS from "cheerio";
 
 /**
  * Napa Valley Event Finder — API (Vercel)
- * Squarespace-stable handler (CORS + OPTIONS + ok semantics)
- * Keeps: caching, per-fetch timeout, aggregate timeout, partial recovery, geo hints, map payload
+ * Corrected for Squarespace native embedding (CORS + OPTIONS)
+ * ---------------------------------------------------------
+ * Keeps:
+ *  • Per-fetch timeout + AbortController
+ *  • Aggregate timeout + partial-result recovery
+ *  • In-memory caching (per serverless instance)
+ *  • JSON-LD extraction + heuristics fallback
+ *  • Geo hints + unified `map` output for Leaflet
+ *
+ * Fixes:
+ *  • CORS: no wildcard; allowlist by Origin (scheme + host only)
+ *  • OPTIONS preflight handling
+ *  • 200 responses always return ok:true (even if 0 matches)
  */
 
 // --- Robust cheerio loader ---
@@ -11,11 +22,12 @@ const load = cheerioNS.load || (cheerioNS.default && cheerioNS.default.load);
 if (!load) throw new Error("Cheerio 'load' not found. Check cheerio package version.");
 
 // --------------------------------------------------
-// CORS (Squarespace + your domains)
+// CORS (ONLY needed for native Squarespace embedding)
+// If you embed widget via iframe on Vercel, CORS is irrelevant.
 // --------------------------------------------------
 const ALLOWED_ORIGINS = new Set([
   "https://napavalleyfeatures.squarespace.com",
-  // Add your real custom domain(s) if you use them:
+  // If you have a connected custom domain, add it (no /event-search):
   // "https://napavalleyfeatures.com",
   // "https://www.napavalleyfeatures.com",
 ]);
@@ -26,8 +38,6 @@ function applyCors(req, res) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
-  // If you are strictly iframe-embedding, you could omit CORS entirely.
-  // For native embedding, keep these:
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -41,7 +51,7 @@ function sendJson(req, res, code, payload) {
 }
 
 // --------------------------------------------------
-// Cache (per serverless instance)
+// In-memory cache (per serverless instance)
 // --------------------------------------------------
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const cache = globalThis.__NVF_CACHE__ || (globalThis.__NVF_CACHE__ = new Map());
@@ -60,18 +70,16 @@ function setCached(k, v) {
 }
 
 // --------------------------------------------------
-// Timeout helpers
+// Timeout helpers (12 s fetch, 22 s aggregate, 24 s hard stop)
 // --------------------------------------------------
-const FETCH_TIMEOUT_MS = 12000;         // 12 s per fetch
-const AGG_TIMEOUT_MS = 22000;           // 22 s overall aggregation
-const HARD_HANDLER_TIMEOUT_MS = 24000;  // 24 s hard stop
+const FETCH_TIMEOUT_MS = 12000;
+const AGG_TIMEOUT_MS = 22000;
+const HARD_HANDLER_TIMEOUT_MS = 24000;
 
-async function withTimeout(promise, ms) {
+async function withTimeout(promise, ms = AGG_TIMEOUT_MS) {
   return Promise.race([
     promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Timeout exceeded")), ms)
-    ),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout exceeded")), ms)),
   ]);
 }
 
@@ -127,8 +135,8 @@ function titleCase(s) {
   if (!s) return s;
   const small = new Set(["a","an","and","at","but","by","for","in","of","on","or","the","to","with"]);
   return s.trim().split(/\s+/).map((w,i)=> {
-    const c = w.toLowerCase();
-    return i && small.has(c) ? c : c[0].toUpperCase() + c.slice(1);
+    const c=w.toLowerCase();
+    return i && small.has(c) ? c : c[0].toUpperCase()+c.slice(1);
   }).join(" ");
 }
 
@@ -138,8 +146,8 @@ function isGenericTitle(t) {
 }
 
 function apDateFromYMD(ymd) {
-  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd||""); if(!m) return null;
-  const dt=new Date(Date.UTC(+m[1],+m[2]-1,+m[3])); if(isNaN(dt)) return null;
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd||""); if(!m)return null;
+  const dt=new Date(Date.UTC(+m[1],+m[2]-1,+m[3])); if(isNaN(dt))return null;
   const dts=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const mos=["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
   return `${dts[dt.getUTCDay()]}, ${mos[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
@@ -147,9 +155,7 @@ function apDateFromYMD(ymd) {
 
 function apTimeFromISOClock(iso) {
   if (!iso) return null;
-  // Treat midnight as “no time provided”
   if (/T00:00(:00)?/.test(iso)) return null;
-
   const m = /T(\d{2}):(\d{2})/.exec(iso);
   if (!m) return null;
 
@@ -165,52 +171,23 @@ function formatTimeRange(a,b){
   if(!t1 && !t2) return null;
   if(t1 && !t2) return t1;
   if(!t1 && t2) return t2;
-  if(t1 === t2) return t1;
+  if(t1===t2) return t1;
   return `${t1}–${t2}`;
 }
 
-function truncate(s, max=260){
+function truncate(s,max=260){
   const x=cleanText(s);
-  return x.length<=max ? x : x.slice(0, max-1).trimEnd() + "…";
+  return x.length<=max ? x : x.slice(0,max-1).trimEnd()+"…";
 }
 
 function inferPriceFromText(t){
-  t = cleanText(t).toLowerCase();
+  t=cleanText(t).toLowerCase();
   if(!t) return null;
   return ["free","no cover","complimentary"].some(x=>t.includes(x)) ? "Free." : null;
 }
 
 // --------------------------------------------------
-// Fetch helper with caching + timeout
-// --------------------------------------------------
-async function fetchText(url) {
-  const key = "GET:" + url;
-  const cached = getCached(key);
-  if (cached) return cached;
-
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-  try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": "NapaValleyFeaturesEventFinder/1.1 (+https://napavalleyfeatures.com)",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      signal: controller.signal,
-    });
-
-    if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
-    const txt = await res.text();
-    setCached(key, txt);
-    return txt;
-  } finally {
-    clearTimeout(id);
-  }
-}
-
-// --------------------------------------------------
-// Weekender formatting + geo hints
+// Geo hints + Weekender formatting
 // --------------------------------------------------
 const GEO_HINTS = {
   napa: { lat: 38.2975, lon: -122.2869 },
@@ -244,7 +221,36 @@ function formatWeekender(e) {
 }
 
 // --------------------------------------------------
-// JSON-LD helpers
+// Fetch helper with caching + AbortController timeout
+// --------------------------------------------------
+async function fetchText(url) {
+  const key = "GET:" + url;
+  const cached = getCached(key);
+  if (cached) return cached;
+
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), Math.min(8000, FETCH_TIMEOUT_MS));
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "NapaValleyFeaturesEventFinder/1.1 (+https://napavalleyfeatures.com)",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
+    const txt = await res.text();
+    setCached(key, txt);
+    return txt;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+// --------------------------------------------------
+// JSON-LD extraction helpers
 // --------------------------------------------------
 function getJsonLdEvents($) {
   const out = [];
@@ -264,13 +270,14 @@ function getJsonLdEvents($) {
 }
 
 function extractStreetAddress(addr) {
-  if (!addr || typeof addr === "string") return null;
+  if (!addr) return null;
+  if (typeof addr === "string") return null;
   const s = cleanText(addr.streetAddress);
   return s ? s + "." : null;
 }
 
 // --------------------------------------------------
-// Page extractor (keeps your Jan 2026 heuristics)
+// Per-event page extraction
 // --------------------------------------------------
 async function extractEventFromPage(url, opts = {}) {
   const html = await fetchText(url);
@@ -281,9 +288,10 @@ async function extractEventFromPage(url, opts = {}) {
     endISO = null,
     address = null,
     description = null,
-    price = null;
+    price = null,
+    geo = null;
 
-  // JSON-LD
+  // JSON-LD event
   const ld = getJsonLdEvents($);
   const ev = ld[0];
   if (ev) {
@@ -302,30 +310,41 @@ async function extractEventFromPage(url, opts = {}) {
     }
   }
 
-  // Supplemental time: only set if a real time is found (avoid forcing 12 a.m.)
+  // Supplemental time heuristic (do NOT force midnight)
   if (!startISO) {
-    const timeMatch = html.match(/\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i);
+    const timeMatch = html.match(
+      /\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i
+    );
     if (timeMatch) {
       const hour = parseInt(timeMatch[1], 10);
       const minute = timeMatch[2] || "00";
       const ampm = timeMatch[5].toLowerCase();
-      const isoHour = ampm.includes("p") && hour < 12 ? hour + 12 : (ampm.includes("a") && hour === 12 ? 0 : hour % 12);
+      const isoHour =
+        ampm.includes("p") && hour < 12 ? hour + 12 :
+        ampm.includes("a") && hour === 12 ? 0 :
+        hour % 12;
       startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
     } else {
       startISO = null;
     }
   }
 
-  // Supplemental price
+  // Supplemental price heuristic
   if (!price) {
     const priceMatch = html.match(/\$\s?\d+(?:\.\d{2})?|\bfree\b/i);
     if (priceMatch) {
-      price = /free/i.test(priceMatch[0]) ? "Free." : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
+      price = /free/i.test(priceMatch[0])
+        ? "Free."
+        : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
     }
   }
 
-  if (!title) title = cleanText($("h1").first().text()) || cleanText($("title").text());
+  // Title fallback
+  if (!title) {
+    title = cleanText($("h1").first().text()) || cleanText($("title").text());
+  }
 
+  // Date + time formatting
   let dateISO = null, when = null;
   const ymd = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "");
   if (ymd) {
@@ -335,11 +354,17 @@ async function extractEventFromPage(url, opts = {}) {
     when = ap ? (t ? `${ap}, ${t}` : ap) : null;
   }
 
+  // Details + inferred price
   let details = description ? truncate(description) : "Details on website.";
   if (details && !details.endsWith(".")) details += ".";
   if (!price) {
     const inf = inferPriceFromText(description || details);
     if (inf) price = inf;
+  }
+
+  // Geo hint fallback
+  if (!opts.skipGeo && !geo && opts.town) {
+    geo = GEO_HINTS[opts.town.toLowerCase()] || null;
   }
 
   return {
@@ -353,7 +378,7 @@ async function extractEventFromPage(url, opts = {}) {
     address: address || "Venue address not provided.",
     town: opts.town || "all",
     tag: opts.tag || "any",
-    geo: opts.town ? (GEO_HINTS[opts.town.toLowerCase()] || null) : null,
+    geo,
   };
 }
 
@@ -365,6 +390,10 @@ async function extractOrFallback(url, title, opts = {}) {
     return ev;
   } catch {
     if (!title || isGenericTitle(title)) return null;
+
+    let geo = null;
+    if (!opts.skipGeo && opts.town) geo = GEO_HINTS[opts.town.toLowerCase()] || null;
+
     return {
       title,
       url,
@@ -376,20 +405,18 @@ async function extractOrFallback(url, title, opts = {}) {
       address: "Venue address not provided.",
       town: opts.town || "all",
       tag: opts.tag || "any",
-      geo: opts.town ? (GEO_HINTS[opts.town.toLowerCase()] || null) : null,
+      geo,
     };
   }
 }
 
 // --------------------------------------------------
-// Filter and Rank (kept, but slightly safer)
+// Filter and rank helper
 // --------------------------------------------------
 function filterAndRank(events, f = {}) {
   const out = [];
   for (const e of events) {
-    if (!e) continue;
-    // If no dateISO, treat as unknown date and exclude from ranked list
-    if (!e.dateISO) continue;
+    if (!e || !e.dateISO) continue;
     if (!withinRange(e.dateISO, f.startISO, f.endISO)) continue;
     if (f.town && f.town !== "all" && e.town && e.town !== f.town) continue;
     if (f.type && f.type !== "any" && e.tag && e.tag !== f.type) continue;
@@ -400,9 +427,10 @@ function filterAndRank(events, f = {}) {
   return out.map(formatWeekender);
 }
 
-// --------------------------------------------------
-// Parsers (yours, unchanged in behavior)
-// --------------------------------------------------
+/* --------------------------------------------------
+   PARSERS
+-------------------------------------------------- */
+
 async function parseDoNapa(listUrl, f) {
   const html = await fetchText(listUrl);
   const $ = load(html);
@@ -420,6 +448,7 @@ async function parseDoNapa(listUrl, f) {
     const ev = await extractOrFallback(url, null, { town: "napa", tag: "any" });
     if (ev) events.push(ev);
   }
+
   return filterAndRank(events, f);
 }
 
@@ -450,6 +479,7 @@ async function parseGrowthZone(listUrl, source, townSlug, f) {
     const ev = await extractOrFallback(x.url, x.title, { town: townSlug, tag: "any" });
     if (ev) events.push(ev);
   }
+
   return filterAndRank(events, f);
 }
 
@@ -536,7 +566,7 @@ async function parseCameo(listUrl, alt, f) {
   for (const t of titles.slice(0, 8)) {
     if (isGenericTitle(t) || /cameo|movie times/i.test(t)) continue;
 
-    events.push({
+    const ev = {
       title: t,
       url: listUrl,
       dateISO: today,
@@ -548,7 +578,9 @@ async function parseCameo(listUrl, alt, f) {
       town: "st-helena",
       tag: "movies",
       geo: GEO_HINTS["st-helena"],
-    });
+    };
+
+    events.push(ev);
   }
 
   return filterAndRank(events, f);
@@ -558,13 +590,15 @@ async function parseCameo(listUrl, alt, f) {
 // Handler
 // --------------------------------------------------
 export default async function handler(req, res) {
-  // CORS + preflight
   applyCors(req, res);
+
+  // Preflight for native Squarespace embedding
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     return res.end();
   }
 
+  // Hard stop
   const hardTimeout = setTimeout(() => {
     try {
       if (!res.writableEnded) {
@@ -591,7 +625,6 @@ export default async function handler(req, res) {
 
     const tasks = SOURCES.map(async (s) => {
       try {
-        // type gate
         if (type === "movies" && s.type !== "movies") return [];
         if (type !== "movies" && s.type === "movies") return [];
 
@@ -613,7 +646,7 @@ export default async function handler(req, res) {
 
     try {
       resultsArrays = await withTimeout(Promise.all(tasks), AGG_TIMEOUT_MS);
-    } catch {
+    } catch (err) {
       timedOut = true;
       const settled = await Promise.allSettled(tasks);
       resultsArrays = settled
@@ -652,7 +685,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Build map payload for the widget (unified)
+    // Unified map output
     const mapData = dedup
       .flatMap((x) => {
         const pts = [];
@@ -666,8 +699,7 @@ export default async function handler(req, res) {
 
     clearTimeout(hardTimeout);
 
-    // IMPORTANT: ok stays true even if there are 0 matches
-    // so the widget can show “No matches” instead of “Search failed.”
+    // IMPORTANT: ok:true on 200 even if 0 matches (widget should show “No matches”)
     sendJson(req, res, 200, {
       ok: true,
       timeout: timedOut,

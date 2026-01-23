@@ -215,7 +215,6 @@ function overlapsRange(evStart, evEnd, qStart, qEnd) {
   if (qEnd && s && s > qEnd) return false;
   return true;
 }
-
 // -------------------- Weekender formatting --------------------
 function formatWeekender(e) {
   const header = cleanText(titleCase(e.title || "Event"));
@@ -240,28 +239,6 @@ function formatWeekender(e) {
     header,
     body: cleanText(`${dateLine} ${details} ${price} ${contact} ${address}`),
     geo,
-  };
-}
-  }
-
-  const details = e.details || "Details on website.";
-  const price = e.price || "Price not provided.";
-  const contact = e.url ? `For more information visit their website (${e.url}).` : "For more information visit their website.";
-  let address = e.address || "Venue address not provided.";
-
-  if (address === "Venue address not provided." && e.town && e.town !== "all") {
-    address = `${titleCase(e.town.replace("-", " "))}, CA`;
-  }
-
-  const geo = e.geo || (GEO_HINTS[(e.town || "").toLowerCase()] || null);
-
-  return {
-    header,
-    body: `${dateLine} ${details} ${price} ${contact} ${address}`.replace(/\s+/g, " ").trim(),
-    geo,
-    town: e.town || "all",
-    tag: e.tag || "any",
-    url: e.url || null,
   };
 }
 

@@ -188,7 +188,6 @@
 
       <div class="row">
         <button id="search">Search</button>
-        <button id="copy" class="secondary" disabled>Copy results</button>
         <span class="hint">Returns up to 5 results in Weekender-style formatting.</span>
       </div>
 
@@ -197,11 +196,6 @@
       <div class="results" id="results"></div>
 
       <div id="mapContainer"></div>
-
-      <div id="copyBlock" style="display:none; margin-top:12px;">
-        <label for="copyText">Copy/paste text</label>
-        <textarea id="copyText" readonly rows="7"></textarea>
-      </div>
 
       <div class="footer-note">
         Note: Results are pulled from a curated set of Napa Valley calendars and venues. Always confirm details on the original event website.
@@ -294,7 +288,6 @@
       function render(results) {
         const wrap = $("results");
         wrap.innerHTML = "";
-        const copyLines = [];
         results.forEach((item) => {
           const div = document.createElement("div");
           div.className = "card event";
@@ -306,12 +299,7 @@
             )}</p>
           `;
           wrap.appendChild(div);
-          copyLines.push(item.header, item.body, "");
         });
-
-        $("copy").disabled = results.length === 0;
-        $("copyBlock").style.display = results.length ? "block" : "none";
-        $("copyText").value = copyLines.join("\n").trim();
       }
 
       // Leaflet map guard: destroy previous map instance before re-initializing
@@ -402,14 +390,6 @@
       }
 
       $("search").addEventListener("click", search);
-
-      $("copy").addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText($("copyText").value);
-          $("copy").textContent = "Copied";
-          setTimeout(() => ($("copy").textContent = "Copy results"), 1200);
-        } catch (_) {}
-      });
 
       setDefaultDates();
       loadSources();

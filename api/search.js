@@ -2,24 +2,50 @@ import * as cheerioNS from "cheerio";
 
 /**
  * Napa Valley Event Finder — API (Vercel)
- * Updated Jan 2026 (geo + timeout stable)
- * ---------------------------------------------------------
- * Full build with:
- *  • Per-fetch timeout (12 s)
- *  • Global handler timeout (25 s)
- *  • Partial-result recovery + metadata flags
- *  • Address fallback for Weekender map rendering
- *  • Full set of parsers + caching
- *  • Geo hints for Concierge map rendering
+ * Squarespace-stable handler (CORS + OPTIONS + ok semantics)
+ * Keeps: caching, per-fetch timeout, aggregate timeout, partial recovery, geo hints, map payload
  */
 
 // --- Robust cheerio loader ---
 const load = cheerioNS.load || (cheerioNS.default && cheerioNS.default.load);
 if (!load) throw new Error("Cheerio 'load' not found. Check cheerio package version.");
 
-// --- In-memory cache (per serverless instance) ---
+// --------------------------------------------------
+// CORS (Squarespace + your domains)
+// --------------------------------------------------
+const ALLOWED_ORIGINS = new Set([
+  "https://napavalleyfeatures.squarespace.com",
+  // Add your real custom domain(s) if you use them:
+  // "https://napavalleyfeatures.com",
+  // "https://www.napavalleyfeatures.com",
+]);
+
+function applyCors(req, res) {
+  const origin = req.headers?.origin;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  // If you are strictly iframe-embedding, you could omit CORS entirely.
+  // For native embedding, keep these:
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+// --- Response helper ---
+function sendJson(req, res, code, payload) {
+  applyCors(req, res);
+  res.statusCode = code;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  if (!res.writableEnded) res.end(JSON.stringify(payload, null, 2));
+}
+
+// --------------------------------------------------
+// Cache (per serverless instance)
+// --------------------------------------------------
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const cache = globalThis.__NVF_CACHE__ || (globalThis.__NVF_CACHE__ = new Map());
+
 function getCached(k) {
   const hit = cache.get(k);
   if (!hit) return null;
@@ -33,16 +59,25 @@ function setCached(k, v) {
   cache.set(k, { t: Date.now(), v });
 }
 
-// --- Timeout helper (25 s global / 12 s fetch) ---
-const FETCH_TIMEOUT_MS = 12000;
-async function withTimeout(promise, ms = FETCH_TIMEOUT_MS) {
+// --------------------------------------------------
+// Timeout helpers
+// --------------------------------------------------
+const FETCH_TIMEOUT_MS = 12000;         // 12 s per fetch
+const AGG_TIMEOUT_MS = 22000;           // 22 s overall aggregation
+const HARD_HANDLER_TIMEOUT_MS = 24000;  // 24 s hard stop
+
+async function withTimeout(promise, ms) {
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout exceeded")), ms)),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout exceeded")), ms)
+    ),
   ]);
 }
 
-// --- Sources ---
+// --------------------------------------------------
+// Sources
+// --------------------------------------------------
 const SOURCES = [
   { id: "donapa", name: "Do Napa", type: "calendar", listUrl: "https://donapa.com/upcoming-events/" },
   { id: "napa_library", name: "Napa County Library", type: "calendar", listUrl: "https://events.napalibrary.org/events?n=60&r=days" },
@@ -59,15 +94,9 @@ const SOURCES = [
   },
 ];
 
-// --- Response helper ---
-function sendJson(res, code, payload) {
-  res.statusCode = code;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  if (!res.writableEnded) res.end(JSON.stringify(payload, null, 2));
-}
-
-// --- Utilities ---
+// --------------------------------------------------
+// Utilities
+// --------------------------------------------------
 function decodeEntities(str) {
   const s = String(str || "");
   const numeric = s
@@ -78,6 +107,7 @@ function decodeEntities(str) {
 }
 function cleanText(s) { return decodeEntities(String(s || "")).replace(/\s+/g, " ").trim(); }
 function toISODate(d) { return d.toISOString().slice(0, 10); }
+
 function parseISODate(s) {
   const m1 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
   if (m1) return new Date(Date.UTC(+m1[1], +m1[2] - 1, +m1[3]));
@@ -85,56 +115,81 @@ function parseISODate(s) {
   if (m2) return new Date(Date.UTC(+m2[3], +m2[1] - 1, +m2[2]));
   return null;
 }
-function normalizeTown(t) { t = (t || "").toLowerCase(); return !t || t === "all" ? "all" : t; }
+
 function withinRange(dateISO, start, end) {
   if (!dateISO) return true;
   if (start && dateISO < start) return false;
   if (end && dateISO > end) return false;
   return true;
 }
+
 function titleCase(s) {
   if (!s) return s;
   const small = new Set(["a","an","and","at","but","by","for","in","of","on","or","the","to","with"]);
-  return s.trim().split(/\s+/).map((w,i)=>{const c=w.toLowerCase();return i&&small.has(c)?c:c[0].toUpperCase()+c.slice(1);}).join(" ");
+  return s.trim().split(/\s+/).map((w,i)=> {
+    const c = w.toLowerCase();
+    return i && small.has(c) ? c : c[0].toUpperCase() + c.slice(1);
+  }).join(" ");
 }
+
 function isGenericTitle(t) {
   const x = cleanText(t).toLowerCase();
   return ["read more","event details","learn more","details","view event"].includes(x);
 }
+
 function apDateFromYMD(ymd) {
-  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd||""); if(!m)return null;
-  const dt=new Date(Date.UTC(+m[1],+m[2]-1,+m[3])); if(isNaN(dt))return null;
-  const dts=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"], mos=["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd||""); if(!m) return null;
+  const dt=new Date(Date.UTC(+m[1],+m[2]-1,+m[3])); if(isNaN(dt)) return null;
+  const dts=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const mos=["Jan.","Feb.","March","April","May","June","July","Aug.","Sept.","Oct.","Nov.","Dec."];
   return `${dts[dt.getUTCDay()]}, ${mos[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
 }
 
 function apTimeFromISOClock(iso) {
   if (!iso) return null;
-  // Handle "T00:00" or "T00:00:00" as no time provided
-  if (/T0{1,2}:0{1,2}(:0{1,2})?/.test(iso)) return null;
+  // Treat midnight as “no time provided”
+  if (/T00:00(:00)?/.test(iso)) return null;
 
   const m = /T(\d{2}):(\d{2})/.exec(iso);
   if (!m) return null;
 
   const hour = +m[1];
   const minute = +m[2];
-  let h = hour % 12 || 12;
+  const h = hour % 12 || 12;
   const ampm = hour >= 12 ? "p.m." : "a.m.";
   return `${h}${minute ? ":" + String(minute).padStart(2, "0") : ""} ${ampm}`;
 }
 
-function formatTimeRange(a,b){const t1=apTimeFromISOClock(a),t2=apTimeFromISOClock(b);if(!t1&&!t2)return null;if(t1&&!t2)return t1;if(!t1&&t2)return t2;if(t1===t2)return t1;return`${t1}–${t2}`;}
-function truncate(s,max=260){const x=cleanText(s);return x.length<=max?x:x.slice(0,max-1).trimEnd()+"…";}
-function inferPriceFromText(t){t=cleanText(t).toLowerCase();if(!t)return null;return["free","no cover","complimentary"].some(x=>t.includes(x))?"Free.":null;}
+function formatTimeRange(a,b){
+  const t1=apTimeFromISOClock(a), t2=apTimeFromISOClock(b);
+  if(!t1 && !t2) return null;
+  if(t1 && !t2) return t1;
+  if(!t1 && t2) return t2;
+  if(t1 === t2) return t1;
+  return `${t1}–${t2}`;
+}
 
-// --- Fetch helper with caching + timeout ---
+function truncate(s, max=260){
+  const x=cleanText(s);
+  return x.length<=max ? x : x.slice(0, max-1).trimEnd() + "…";
+}
+
+function inferPriceFromText(t){
+  t = cleanText(t).toLowerCase();
+  if(!t) return null;
+  return ["free","no cover","complimentary"].some(x=>t.includes(x)) ? "Free." : null;
+}
+
+// --------------------------------------------------
+// Fetch helper with caching + timeout
+// --------------------------------------------------
 async function fetchText(url) {
   const key = "GET:" + url;
   const cached = getCached(key);
   if (cached) return cached;
 
   const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), 8000); // 8-second fetch cap
+  const id = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
     const res = await fetch(url, {
@@ -145,18 +200,26 @@ async function fetchText(url) {
       signal: controller.signal,
     });
 
-    clearTimeout(id);
     if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
     const txt = await res.text();
     setCached(key, txt);
     return txt;
-  } catch (err) {
+  } finally {
     clearTimeout(id);
-    throw err;
   }
 }
 
-// --- Weekender formatting ---
+// --------------------------------------------------
+// Weekender formatting + geo hints
+// --------------------------------------------------
+const GEO_HINTS = {
+  napa: { lat: 38.2975, lon: -122.2869 },
+  "st-helena": { lat: 38.5056, lon: -122.4703 },
+  yountville: { lat: 38.3926, lon: -122.3631 },
+  calistoga: { lat: 38.578, lon: -122.5797 },
+  "american-canyon": { lat: 38.1686, lon: -122.2608 },
+};
+
 function formatWeekender(e) {
   const header = titleCase(e.title || "Event");
   const dateLine = e.when || "Date and time on website.";
@@ -165,21 +228,13 @@ function formatWeekender(e) {
   const contact = e.contact || (e.url
     ? `For more information visit their website (${e.url}).`
     : "For more information visit their website.");
-  let address = e.address || "Venue address not provided.";
 
+  let address = e.address || "Venue address not provided.";
   if (address === "Venue address not provided." && e.town && e.town !== "all") {
     address = `${titleCase(e.town.replace("-", " "))}, CA`;
   }
 
-  const geoHints = {
-    napa: { lat: 38.2975, lon: -122.2869 },
-    "st-helena": { lat: 38.5056, lon: -122.4703 },
-    yountville: { lat: 38.3926, lon: -122.3631 },
-    calistoga: { lat: 38.578, lon: -122.5797 },
-    "american-canyon": { lat: 38.1686, lon: -122.2608 },
-  };
-
-  const geo = geoHints[(e.town || "").toLowerCase()] || null;
+  const geo = e.geo || (GEO_HINTS[(e.town || "").toLowerCase()] || null);
 
   return {
     header,
@@ -188,8 +243,9 @@ function formatWeekender(e) {
   };
 }
 
-// ✅ Extraction utilities — place before parser section
-
+// --------------------------------------------------
+// JSON-LD helpers
+// --------------------------------------------------
 function getJsonLdEvents($) {
   const out = [];
   $("script[type='application/ld+json']").each((_, el) => {
@@ -199,9 +255,7 @@ function getJsonLdEvents($) {
       for (const x of arr) {
         if (x["@type"] === "Event") out.push(x);
         if (Array.isArray(x["@graph"])) {
-          for (const g of x["@graph"]) {
-            if (g["@type"] === "Event") out.push(g);
-          }
+          for (const g of x["@graph"]) if (g["@type"] === "Event") out.push(g);
         }
       }
     } catch {}
@@ -210,12 +264,14 @@ function getJsonLdEvents($) {
 }
 
 function extractStreetAddress(addr) {
-  if (!addr) return null;
-  if (typeof addr === "string") return null;
+  if (!addr || typeof addr === "string") return null;
   const s = cleanText(addr.streetAddress);
   return s ? s + "." : null;
 }
 
+// --------------------------------------------------
+// Page extractor (keeps your Jan 2026 heuristics)
+// --------------------------------------------------
 async function extractEventFromPage(url, opts = {}) {
   const html = await fetchText(url);
   const $ = load(html);
@@ -225,10 +281,9 @@ async function extractEventFromPage(url, opts = {}) {
     endISO = null,
     address = null,
     description = null,
-    price = null,
-    geo = null;
+    price = null;
 
-  // --- Structured data extraction (JSON-LD) ---
+  // JSON-LD
   const ld = getJsonLdEvents($);
   const ev = ld[0];
   if (ev) {
@@ -236,6 +291,7 @@ async function extractEventFromPage(url, opts = {}) {
     startISO = ev.startDate || null;
     endISO = ev.endDate || null;
     description = ev.description || null;
+
     const loc = Array.isArray(ev.location) ? ev.location[0] : ev.location;
     if (loc && loc.address) address = extractStreetAddress(loc.address);
 
@@ -246,53 +302,39 @@ async function extractEventFromPage(url, opts = {}) {
     }
   }
 
-  // --- Supplemental time & price extraction (restored heuristic, Jan 2026) ---
+  // Supplemental time: only set if a real time is found (avoid forcing 12 a.m.)
   if (!startISO) {
-  // Look for explicit times like "7 p.m." or "6:30 PM"
-  const timeMatch = html.match(
-    /\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i
-  );
-  if (timeMatch) {
-    const hour = parseInt(timeMatch[1], 10);
-    const minute = timeMatch[2] || "00";
-    const ampm = timeMatch[5].toLowerCase();
-    const isoHour = ampm.includes("p") && hour < 12 ? hour + 12 : hour % 12;
-    startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
-  } else {
-    // ❌ No valid time found → don’t set startISO at all (avoids “12 a.m.”)
-    startISO = null;
-  }
-}
-
-  if (!price) {
-    // Find $ amounts or "free" mentions in visible text
-    const priceMatch = html.match(/\$\s?\d+(?:\.\d{2})?|\bfree\b/i);
-    if (priceMatch) {
-      price = /free/i.test(priceMatch[0])
-        ? "Free."
-        : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
+    const timeMatch = html.match(/\b(\d{1,2})(?::(\d{2}))?\s*(?:[-–]\s*(\d{1,2})(?::(\d{2}))?\s*)?(a\.m\.|p\.m\.|am|pm)\b/i);
+    if (timeMatch) {
+      const hour = parseInt(timeMatch[1], 10);
+      const minute = timeMatch[2] || "00";
+      const ampm = timeMatch[5].toLowerCase();
+      const isoHour = ampm.includes("p") && hour < 12 ? hour + 12 : (ampm.includes("a") && hour === 12 ? 0 : hour % 12);
+      startISO = `${toISODate(new Date())}T${String(isoHour).padStart(2, "0")}:${minute}`;
+    } else {
+      startISO = null;
     }
   }
 
-  // --- Title fallback ---
-  if (!title) {
-    title = cleanText($("h1").first().text()) || cleanText($("title").text());
+  // Supplemental price
+  if (!price) {
+    const priceMatch = html.match(/\$\s?\d+(?:\.\d{2})?|\bfree\b/i);
+    if (priceMatch) {
+      price = /free/i.test(priceMatch[0]) ? "Free." : `Tickets ${priceMatch[0].replace(/\s+/g, "")}.`;
+    }
   }
 
-  // --- Date & time formatting ---
-  let dateISO = null,
-    when = null;
+  if (!title) title = cleanText($("h1").first().text()) || cleanText($("title").text());
+
+  let dateISO = null, when = null;
   const ymd = /^(\d{4}-\d{2}-\d{2})/.exec(startISO || "");
   if (ymd) {
     dateISO = ymd[1];
     const ap = apDateFromYMD(dateISO);
-    const t = endISO
-      ? formatTimeRange(startISO, endISO)
-      : apTimeFromISOClock(startISO);
+    const t = endISO ? formatTimeRange(startISO, endISO) : apTimeFromISOClock(startISO);
     when = ap ? (t ? `${ap}, ${t}` : ap) : null;
   }
 
-  // --- Description and price inference ---
   let details = description ? truncate(description) : "Details on website.";
   if (details && !details.endsWith(".")) details += ".";
   if (!price) {
@@ -300,19 +342,6 @@ async function extractEventFromPage(url, opts = {}) {
     if (inf) price = inf;
   }
 
-  // --- Geo assignment fallback ---
-  if (!opts.skipGeo && !geo && opts.town) {
-    const geoHints = {
-      napa: { lat: 38.2975, lon: -122.2869 },
-      "st-helena": { lat: 38.5056, lon: -122.4703 },
-      yountville: { lat: 38.3926, lon: -122.3631 },
-      calistoga: { lat: 38.578, lon: -122.5797 },
-      "american-canyon": { lat: 38.1686, lon: -122.2608 },
-    };
-    geo = geoHints[opts.town.toLowerCase()] || null;
-  }
-
-  // --- Final normalized event object ---
   return {
     title: title || "Event",
     url,
@@ -324,7 +353,7 @@ async function extractEventFromPage(url, opts = {}) {
     address: address || "Venue address not provided.",
     town: opts.town || "all",
     tag: opts.tag || "any",
-    geo,
+    geo: opts.town ? (GEO_HINTS[opts.town.toLowerCase()] || null) : null,
   };
 }
 
@@ -336,20 +365,6 @@ async function extractOrFallback(url, title, opts = {}) {
     return ev;
   } catch {
     if (!title || isGenericTitle(title)) return null;
-
-    // --- Geo assignment fallback ---
-    let geo = null;
-    if (!opts.skipGeo && opts.town) {
-      const geoHints = {
-        napa: { lat: 38.2975, lon: -122.2869 },
-        "st-helena": { lat: 38.5056, lon: -122.4703 },
-        yountville: { lat: 38.3926, lon: -122.3631 },
-        calistoga: { lat: 38.578, lon: -122.5797 },
-        "american-canyon": { lat: 38.1686, lon: -122.2608 },
-      };
-      geo = geoHints[opts.town.toLowerCase()] || null;
-    }
-
     return {
       title,
       url,
@@ -361,15 +376,33 @@ async function extractOrFallback(url, title, opts = {}) {
       address: "Venue address not provided.",
       town: opts.town || "all",
       tag: opts.tag || "any",
-      geo,
+      geo: opts.town ? (GEO_HINTS[opts.town.toLowerCase()] || null) : null,
     };
   }
 }
 
-/* --------------------------------------------------
-   PARSERS (with Geo Hint Integration)
--------------------------------------------------- */
+// --------------------------------------------------
+// Filter and Rank (kept, but slightly safer)
+// --------------------------------------------------
+function filterAndRank(events, f = {}) {
+  const out = [];
+  for (const e of events) {
+    if (!e) continue;
+    // If no dateISO, treat as unknown date and exclude from ranked list
+    if (!e.dateISO) continue;
+    if (!withinRange(e.dateISO, f.startISO, f.endISO)) continue;
+    if (f.town && f.town !== "all" && e.town && e.town !== f.town) continue;
+    if (f.type && f.type !== "any" && e.tag && e.tag !== f.type) continue;
+    out.push(e);
+  }
 
+  out.sort((a, b) => (a.dateISO < b.dateISO ? 1 : -1));
+  return out.map(formatWeekender);
+}
+
+// --------------------------------------------------
+// Parsers (yours, unchanged in behavior)
+// --------------------------------------------------
 async function parseDoNapa(listUrl, f) {
   const html = await fetchText(listUrl);
   const $ = load(html);
@@ -385,22 +418,8 @@ async function parseDoNapa(listUrl, f) {
   const events = [];
   for (const url of Array.from(urls).slice(0, 10)) {
     const ev = await extractOrFallback(url, null, { town: "napa", tag: "any" });
-
-    // --- Geo assignment for Concierge map rendering ---
-    if (ev && !ev.geo) {
-      const geoHints = {
-        napa: { lat: 38.2975, lon: -122.2869 },
-        "st-helena": { lat: 38.5056, lon: -122.4703 },
-        yountville: { lat: 38.3926, lon: -122.3631 },
-        calistoga: { lat: 38.578, lon: -122.5797 },
-        "american-canyon": { lat: 38.1686, lon: -122.2608 },
-      };
-      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
-    }
-
     if (ev) events.push(ev);
   }
-
   return filterAndRank(events, f);
 }
 
@@ -429,22 +448,8 @@ async function parseGrowthZone(listUrl, source, townSlug, f) {
   const events = [];
   for (const x of uniq) {
     const ev = await extractOrFallback(x.url, x.title, { town: townSlug, tag: "any" });
-
-    // --- Geo assignment ---
-    if (ev && !ev.geo) {
-      const geoHints = {
-        napa: { lat: 38.2975, lon: -122.2869 },
-        "st-helena": { lat: 38.5056, lon: -122.4703 },
-        yountville: { lat: 38.3926, lon: -122.3631 },
-        calistoga: { lat: 38.578, lon: -122.5797 },
-        "american-canyon": { lat: 38.1686, lon: -122.2608 },
-      };
-      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
-    }
-
     if (ev) events.push(ev);
   }
-
   return filterAndRank(events, f);
 }
 
@@ -473,19 +478,6 @@ async function parseNapaLibrary(listUrl, f) {
   const events = [];
   for (const x of uniq) {
     const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
-
-    // --- Geo assignment ---
-    if (ev && !ev.geo) {
-      const geoHints = {
-        napa: { lat: 38.2975, lon: -122.2869 },
-        "st-helena": { lat: 38.5056, lon: -122.4703 },
-        yountville: { lat: 38.3926, lon: -122.3631 },
-        calistoga: { lat: 38.578, lon: -122.5797 },
-        "american-canyon": { lat: 38.1686, lon: -122.2608 },
-      };
-      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
-    }
-
     if (ev) events.push(ev);
   }
 
@@ -517,19 +509,6 @@ async function parseVisitNapaValley(listUrl, f) {
   const events = [];
   for (const x of uniq) {
     const ev = await extractOrFallback(x.url, x.title, { town: "all", tag: "any" });
-
-    // --- Geo assignment ---
-    if (ev && !ev.geo) {
-      const geoHints = {
-        napa: { lat: 38.2975, lon: -122.2869 },
-        "st-helena": { lat: 38.5056, lon: -122.4703 },
-        yountville: { lat: 38.3926, lon: -122.3631 },
-        calistoga: { lat: 38.578, lon: -122.5797 },
-        "american-canyon": { lat: 38.1686, lon: -122.2608 },
-      };
-      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
-    }
-
     if (ev) events.push(ev);
   }
 
@@ -557,7 +536,7 @@ async function parseCameo(listUrl, alt, f) {
   for (const t of titles.slice(0, 8)) {
     if (isGenericTitle(t) || /cameo|movie times/i.test(t)) continue;
 
-    const ev = {
+    events.push({
       title: t,
       url: listUrl,
       dateISO: today,
@@ -568,148 +547,142 @@ async function parseCameo(listUrl, alt, f) {
       address: meta.address,
       town: "st-helena",
       tag: "movies",
-    };
-
-    // --- Geo assignment ---
-    if (!ev.geo) {
-      const geoHints = {
-        napa: { lat: 38.2975, lon: -122.2869 },
-        "st-helena": { lat: 38.5056, lon: -122.4703 },
-        yountville: { lat: 38.3926, lon: -122.3631 },
-        calistoga: { lat: 38.578, lon: -122.5797 },
-        "american-canyon": { lat: 38.1686, lon: -122.2608 },
-      };
-      ev.geo = geoHints[ev.town?.toLowerCase()] || null;
-    }
-
-    events.push(ev);
+      geo: GEO_HINTS["st-helena"],
+    });
   }
 
   return filterAndRank(events, f);
 }
 
 // --------------------------------------------------
-// Filter and Rank Helper (required by all parsers)
-// --------------------------------------------------
-function filterAndRank(events, f = {}) {
-  const out = [];
-  for (const e of events) {
-    if (!e || !e.dateISO) continue;
-    if (!withinRange(e.dateISO, f.startISO, f.endISO)) continue;
-    if (f.town && f.town !== "all" && e.town && e.town !== f.town) continue;
-    if (f.type && f.type !== "any" && e.tag && e.tag !== f.type) continue;
-    out.push(e);
-  }
-
-  // Sort newest to oldest by dateISO
-  out.sort((a, b) => (a.dateISO < b.dateISO ? 1 : -1));
-
-  // Convert to Weekender-style format
-  return out.map(formatWeekender);
-}
-
-// --------------------------------------------------
 // Handler
 // --------------------------------------------------
-export default async function handler(req,res){
-  // fail-safe: force response after 20 s
+export default async function handler(req, res) {
+  // CORS + preflight
+  applyCors(req, res);
+  if (req.method === "OPTIONS") {
+    res.statusCode = 204;
+    return res.end();
+  }
+
   const hardTimeout = setTimeout(() => {
     try {
       if (!res.writableEnded) {
-        console.error("Handler exceeded 20 s — forcing end");
-        sendJson(res, 504, { ok: false, timeout: true, results: [] });
+        sendJson(req, res, 504, { ok: false, timeout: true, results: [], map: [] });
       }
     } catch {}
-  }, 20000);
+  }, HARD_HANDLER_TIMEOUT_MS);
 
-  try{
-    const u=new URL(typeof req.url==="string"?req.url:"/api/search","http://localhost");
-    const town=u.searchParams.get("town")||"all";
-    const type=u.searchParams.get("type")||"any";
-    const start=parseISODate(u.searchParams.get("start")||"");
-    const end=parseISODate(u.searchParams.get("end")||"");
-    const limit=Math.min(10,Math.max(1,parseInt(u.searchParams.get("limit")||"5",10)));
-    const filters={town,type,startISO:start?toISODate(start):null,endISO:end?toISODate(end):null};
+  try {
+    const u = new URL(typeof req.url === "string" ? req.url : "/api/search", "http://localhost");
 
-    const tasks=SOURCES.map(async s=>{
-      try{
-        if(type==="movies"&&s.type!=="movies")return[];
-        if(type!=="movies"&&s.type==="movies")return[];
-        if(s.id==="donapa")return await parseDoNapa(s.listUrl,filters);
-        if(s.id==="napa_library")return await parseNapaLibrary(s.listUrl,filters);
-        if(s.id==="visit_napa_valley")return await parseVisitNapaValley(s.listUrl,filters);
-        if(s.id==="amcan_chamber")return await parseGrowthZone(s.listUrl,s.name,"american-canyon",filters);
-        if(s.id==="calistoga_chamber")return await parseGrowthZone(s.listUrl,s.name,"calistoga",filters);
-        if(s.id==="yountville_chamber")return await parseGrowthZone(s.listUrl,s.name,"yountville",filters);
-        if(s.id==="cameo")return await parseCameo(s.listUrl,s.altUrls||[],filters);
-        return[];
-      }catch{return[];}
+    const town = u.searchParams.get("town") || "all";
+    const type = u.searchParams.get("type") || "any";
+    const start = parseISODate(u.searchParams.get("start") || "");
+    const end = parseISODate(u.searchParams.get("end") || "");
+    const limit = Math.min(10, Math.max(1, parseInt(u.searchParams.get("limit") || "5", 10)));
+
+    const filters = {
+      town,
+      type,
+      startISO: start ? toISODate(start) : null,
+      endISO: end ? toISODate(end) : null,
+    };
+
+    const tasks = SOURCES.map(async (s) => {
+      try {
+        // type gate
+        if (type === "movies" && s.type !== "movies") return [];
+        if (type !== "movies" && s.type === "movies") return [];
+
+        if (s.id === "donapa") return await parseDoNapa(s.listUrl, filters);
+        if (s.id === "napa_library") return await parseNapaLibrary(s.listUrl, filters);
+        if (s.id === "visit_napa_valley") return await parseVisitNapaValley(s.listUrl, filters);
+        if (s.id === "amcan_chamber") return await parseGrowthZone(s.listUrl, s.name, "american-canyon", filters);
+        if (s.id === "calistoga_chamber") return await parseGrowthZone(s.listUrl, s.name, "calistoga", filters);
+        if (s.id === "yountville_chamber") return await parseGrowthZone(s.listUrl, s.name, "yountville", filters);
+        if (s.id === "cameo") return await parseCameo(s.listUrl, s.altUrls || [], filters);
+        return [];
+      } catch {
+        return [];
+      }
     });
 
-    let results;
-    try{
-      results=await withTimeout(Promise.all(tasks));
-    }catch(err){
-      console.warn("Timeout — returning partial results:",err.message);
-      const settled=await Promise.allSettled(tasks);
-      results=settled.filter(r=>r.status==="fulfilled").map(r=>r.value||[]);
+    let resultsArrays = [];
+    let timedOut = false;
+
+    try {
+      resultsArrays = await withTimeout(Promise.all(tasks), AGG_TIMEOUT_MS);
+    } catch {
+      timedOut = true;
+      const settled = await Promise.allSettled(tasks);
+      resultsArrays = settled
+        .filter((r) => r.status === "fulfilled")
+        .map((r) => r.value || []);
     }
 
-    let all=[]; for(const r of results) all=all.concat(r);
-    const seen=new Set(), dedup=[];
-    for(const x of all){
-      const k=(x.header||"")+(x.body||""); if(seen.has(k))continue;
-      seen.add(k); dedup.push(x);
+    // Flatten + dedupe
+    let all = [];
+    for (const r of resultsArrays) all = all.concat(r);
+
+    const seen = new Set();
+    const dedup = [];
+    for (const x of all) {
+      const k = (x.header || "") + "||" + (x.body || "");
+      if (seen.has(k)) continue;
+      seen.add(k);
+      dedup.push(x);
     }
 
-        const allFailed = dedup.length === 0;
-    if (dedup.length < 3)
-      console.warn(`Only ${dedup.length} verified events — supplement via web.`);
+    // Supplement if thin
+    let supplemented = false;
+    if (dedup.length < 3) {
+      supplemented = true;
+      dedup.push({
+        header: "Performance & Art Venues (for other nights)",
+        body:
+          "If you’d like more art or performance options on future dates, visit Napa Valley Performing Arts Center (Yountville), Lucky Penny Productions (Napa), Lincoln Theater (Yountville), Uptown Theatre (Napa) or Cameo Cinema (St. Helena).",
+        mapHint: [
+          { name: "Uptown Theatre Napa", lat: 38.2991, lon: -122.2858 },
+          { name: "Lincoln Theater", lat: 38.3926, lon: -122.3631 },
+          { name: "Lucky Penny Productions", lat: 38.2979, lon: -122.2864 },
+          { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
+          { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
+        ],
+      });
+    }
 
-    // --- Add fallback venues & map metadata when few results ---
-if (dedup.length < 3) {
-  dedup.push({
-    header: "Performance & Art Venues (for other nights)",
-    body:
-      "If you’d like more art or performance options on future dates, visit Napa Valley Performing Arts Center (Yountville), Lucky Penny Productions (Napa), Lincoln Theater (Yountville), Uptown Theatre (Napa), or Cameo Cinema (St. Helena).",
-    mapHint: [
-      { name: "Uptown Theatre Napa", lat: 38.2991, lon: -122.2858 },
-      { name: "Lincoln Theater", lat: 38.3926, lon: -122.3631 },
-      { name: "Lucky Penny Productions", lat: 38.2979, lon: -122.2864 },
-      { name: "Napa Valley Performing Arts Center", lat: 38.3925, lon: -122.363 },
-      { name: "Cameo Cinema", lat: 38.5056, lon: -122.4703 },
-    ],
-  });
-}
+    // Build map payload for the widget (unified)
+    const mapData = dedup
+      .flatMap((x) => {
+        const pts = [];
+        if (x.geo && typeof x.geo.lat === "number" && typeof x.geo.lon === "number") {
+          pts.push({ name: x.header, lat: x.geo.lat, lon: x.geo.lon });
+        }
+        if (Array.isArray(x.mapHint)) pts.push(...x.mapHint);
+        return pts;
+      })
+      .filter((p) => p && typeof p.lat === "number" && typeof p.lon === "number");
 
     clearTimeout(hardTimeout);
 
-// --- Build map metadata for client rendering ---
-const mapData = dedup
-  .flatMap(x => {
-    const points = [];
-    if (x.geo) points.push({ name: x.header, lat: x.geo.lat, lon: x.geo.lon });
-    if (x.mapHint) points.push(...x.mapHint);
-    return points;
-  })
-  .filter(Boolean);
-
-sendJson(res, 200, {
-  ok: !allFailed,
-  timeout: allFailed,
-  supplemented: dedup.length < 3,
-  count: dedup.slice(0, limit).length,
-  results: dedup.slice(0, limit).map(x => ({
-    header: x.header,
-    body: x.body,
-    geo: x.geo ? { lat: x.geo.lat, lon: x.geo.lon } : null,
-    mapHint: x.mapHint || null,
-  })),
-  map: mapData.length ? mapData : null, // ✅ New unified map output
-});
-
+    // IMPORTANT: ok stays true even if there are 0 matches
+    // so the widget can show “No matches” instead of “Search failed.”
+    sendJson(req, res, 200, {
+      ok: true,
+      timeout: timedOut,
+      supplemented,
+      count: dedup.slice(0, limit).length,
+      results: dedup.slice(0, limit).map((x) => ({
+        header: x.header,
+        body: x.body,
+        geo: x.geo ? { lat: x.geo.lat, lon: x.geo.lon } : null,
+        mapHint: x.mapHint || null,
+      })),
+      map: mapData, // always array
+    });
   } catch (e) {
     clearTimeout(hardTimeout);
-    sendJson(res, 500, { ok: false, error: e?.message || String(e) });
+    sendJson(req, res, 500, { ok: false, error: e?.message || String(e), results: [], map: [] });
   }
 }

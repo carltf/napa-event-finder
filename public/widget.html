@@ -84,6 +84,32 @@
       background: #fff;
       color: #111827;
     }
+    /* Mobile: stack as a clean 2-column button grid */
+@media (max-width: 819px) {
+  .row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    align-items: stretch;
+  }
+  .row .hint {
+    grid-column: 1 / -1;
+  }
+  .row button {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* Desktop: keep your existing row behavior, but equal button widths */
+@media (min-width: 820px) {
+  .row {
+    display: flex;
+  }
+  .row button {
+    min-width: 180px;
+  }
+}
     button:disabled {
       opacity: 0.6;
       cursor: not-allowed;

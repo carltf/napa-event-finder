@@ -25,6 +25,8 @@ const ALLOWED_ORIGINS = new Set([
   "http://localhost:5173",
   "http://localhost:5174",
   "https://napaserve.vercel.app",
+  "https://napaserve.org",
+  "https://www.napaserve.org",
 ]);
 
 function applyCors(req, res) {

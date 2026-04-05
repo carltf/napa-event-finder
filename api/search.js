@@ -147,11 +147,13 @@ function parseISODate(s) {
 
 function titleCase(s) {
   if (!s) return s;
-  const small = new Set(["a", "an", "and", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with"]);
+  const small = new Set(["a", "an", "the", "and", "but", "or", "for", "nor", "on", "at", "to", "by", "in", "of", "up"]);
   return s
     .trim()
     .split(/\s+/)
     .map((w, i) => {
+      // Preserve words already in ALL CAPS (acronyms like "ACT", "EBT", "DJ")
+      if (w.length > 1 && w === w.toUpperCase() && /[A-Z]/.test(w)) return w;
       const c = w.toLowerCase();
       return i && small.has(c) ? c : c[0].toUpperCase() + c.slice(1);
     })
@@ -804,68 +806,112 @@ async function parseCameoFilmClass(f) {
   return filterAndRank(events, f);
 }
 
-// -------------------- Parser: Brannan Center --------------------
+// -------------------- Parser: Brannan Center (Google Calendar API) --------------------
+const BRANNAN_GCAL_ID = "1upv6eaopbpe9qv79cabbhe6mubv3727@import.calendar.google.com";
+const BRANNAN_GCAL_KEY = "AIzaSyBNlYH01_9Hc5S1J9vuFmu2nUqBZJNAXxs";
+const BRANNAN_TITLE_BLOCKLIST = /private|rental|load\s*in|setup|teardown|sound\s*check/i;
+
 async function parseBrannanCenter(f) {
-  const listUrl = "https://www.brannancenter.org/events";
-  const html = await fetchText(listUrl);
-  const $ = load(html);
-  const events = [];
-  const seen = new Set();
+  try {
+    const now = new Date();
+    const timeMin = now.toISOString();
+    const end = new Date(now);
+    end.setMonth(end.getMonth() + 3);
+    const timeMax = end.toISOString();
 
-  $(".eventlist-event, article, .summary-item, .sqs-block").each((_, el) => {
-    const titleEl = $(el).find("h1, h2, h3, .eventlist-title, .summary-title").first();
-    const title = cleanText(titleEl.text());
-    if (!title || title.length < 2) return;
-    if (/private|rental/i.test(title)) return;
-    if (seen.has(title.toLowerCase())) return;
-    seen.add(title.toLowerCase());
+    const url = `https://clients6.google.com/calendar/v3/calendars/${encodeURIComponent(BRANNAN_GCAL_ID)}/events`
+      + `?singleEvents=true&orderBy=startTime&maxResults=25`
+      + `&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`
+      + `&timeZone=America%2FLos_Angeles&key=${BRANNAN_GCAL_KEY}`;
 
-    const blockText = $(el).text();
-    const startYMD = parseMonthDayYear(blockText);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    let data;
+    try {
+      const res = await fetch(url, {
+        headers: { "Accept": "application/json" },
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`GCal API ${res.status}`);
+      data = await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
 
-    const tagText = cleanText(
-      $(el).find(".eventlist-cats, .summary-metadata, .event-category, [class*='tag'], [class*='cat']").text()
-    ).toLowerCase();
-    let tag;
-    if (/jazz|music/.test(tagText)) tag = "music";
-    else if (/comedy/.test(tagText)) tag = "nightlife";
-    else if (/classical|theater|theatre|dance/.test(tagText)) tag = "art";
-    else if (/class|workshop/.test(tagText)) tag = "wellness";
-    else if (/film/.test(tagText)) tag = "movies";
-    else tag = classifyTag(title, blockText);
-    if (tag === "any") tag = "art";
+    const items = data.items || [];
+    const events = [];
+    const seen = new Set();
 
-    const descEl = $(el).find(".eventlist-description, .summary-excerpt, p").first();
-    let desc = cleanText(descEl.text());
-    desc = normalizeExcerpt(truncate(desc || "Event at the Brannan Center, Calistoga.", 260));
+    for (const item of items) {
+      if (item.status !== "confirmed") continue;
+      let title = cleanText(item.summary || "");
+      if (!title) continue;
 
-    const timeEl = $(el).find(".event-time-12hr, .eventlist-meta-time, time").first();
-    const timeTxt = cleanText(timeEl.text());
-    const when = startYMD ? apDateFromYMD(startYMD) : null;
-    const whenFull = when ? (timeTxt ? `${when}, ${timeTxt}` : when) : "Date on website.";
+      // Strip Tripleseat "[D]" / "[T]" prefix
+      title = title.replace(/^\[[A-Z]\]\s*/, "");
+      if (!title || title.length < 3) continue;
+      if (BRANNAN_TITLE_BLOCKLIST.test(title)) continue;
 
-    let link = titleEl.find("a").attr("href") || titleEl.closest("a").attr("href")
-      || $(el).find("a[href*='/events/']").attr("href");
-    const fullUrl = link
-      ? (link.startsWith("http") ? link : "https://www.brannancenter.org" + link)
-      : listUrl;
+      // Dedupe by title+date
+      const startISO = item.start?.dateTime || item.start?.date || "";
+      const startYMD = ymdFromISO(startISO) || (startISO.length === 10 ? startISO : null);
+      const dedupeKey = title.toLowerCase() + "|" + (startYMD || "");
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
 
-    events.push({
-      title,
-      url: fullUrl,
-      when: whenFull,
-      startYMD,
-      endYMD: startYMD,
-      details: desc,
-      price: "Price not provided.",
-      address: "1407 3rd Street, Calistoga.",
-      town: "calistoga",
-      tag,
-      geo: GEO_HINTS["calistoga"],
-    });
-  });
+      const endISO = item.end?.dateTime || item.end?.date || "";
+      const endYMD = ymdFromISO(endISO) || startYMD;
 
-  return filterAndRank(events, f);
+      // Time formatting
+      const timeRange = formatTimeRange(startISO, endISO);
+      const when = startYMD ? apDateFromYMD(startYMD) : null;
+      const whenFull = when ? (timeRange ? `${when}, ${timeRange}` : when) : "Date on website.";
+
+      // Extract a clean description — skip internal notes
+      let desc = "";
+      const rawDesc = (item.description || "").split("\n");
+      for (const line of rawDesc) {
+        const trimmed = line.trim();
+        // Skip internal Tripleseat lines
+        if (/^\[?Guests:|^Event:|^Advance Contact|^Hospitality|^Materials|^Ticketing|^Lodging|^Tech:|^Series sponsor|^Performance sponsor|^Wine sponsor|^Member Announce|^Public Announce|^Brannan Center Concessions|^Reserved or GA|^Marketing/i.test(trimmed)) continue;
+        if (!trimmed) continue;
+        // Use first substantive line (Artist, Show Title, or general text)
+        if (/^(Artist|Show Title|Format|Venue|Pricing|Time):?\s*/i.test(trimmed)) {
+          desc += trimmed.replace(/^(Artist|Show Title|Format|Venue|Pricing|Time):?\s*/i, "").trim() + " ";
+        } else if (!/^https?:\/\//.test(trimmed) && !desc) {
+          desc = trimmed;
+          break;
+        }
+      }
+      desc = normalizeExcerpt(truncate(desc.trim() || "Event at the Brannan Center, Calistoga.", 260));
+
+      // Build slug from title for event URL
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const eventUrl = `https://www.brannancenter.org/events/${slug}`;
+
+      const tag = classifyTag(title, desc);
+
+      events.push({
+        title,
+        url: eventUrl,
+        when: whenFull,
+        startYMD,
+        endYMD,
+        details: desc,
+        price: "Price not provided.",
+        address: "1407 3rd Street, Calistoga.",
+        town: "calistoga",
+        tag: tag === "any" ? "art" : tag,
+        geo: GEO_HINTS["calistoga"],
+      });
+    }
+
+    return filterAndRank(events, f);
+  } catch (e) {
+    // Log warning but don't throw — return empty
+    console.warn("parseBrannanCenter failed:", e?.message || e);
+    return [];
+  }
 }
 
 // -------------------- Parser: Napa County Library (CivicEngage) --------------------
@@ -1093,7 +1139,25 @@ async function parseAmericanCanyon(f) {
     const blockText = $(el).text();
     const startYMD = parseMonthDayYear(blockText);
 
-    const locText = cleanText($(el).find(".location, .event-location, [class*='loc']").text());
+    let locText = cleanText($(el).find(".location, .event-location, [class*='loc']").text());
+    // Strip date artifacts and city suffix from location text
+    locText = locText.replace(/^\d{1,2}\s+[A-Za-z]+\s+\d{4}\s*/, "");
+    locText = locText.replace(/^[A-Za-z]+\s+\d{1,2},?\s+\d{4}\s*/, "");
+    locText = locText.replace(/,\s*American Canyon\.?\s*$/i, "").trim();
+    // If locText is just the event title or very short, discard it
+    if (locText && (locText.toLowerCase() === title.toLowerCase() || locText.length < 3)) locText = "";
+
+    // Extract description text, stripping date artifacts and city suffixes
+    const descEl = $(el).find(".event-description, .description, p, .summary").first();
+    let rawDesc = cleanText(descEl.text());
+    // Strip leading date like "11 Apr 2026" or "April 17, 2026"
+    rawDesc = rawDesc.replace(/^\d{1,2}\s+[A-Za-z]+\s+\d{4}\s*/, "");
+    rawDesc = rawDesc.replace(/^[A-Za-z]+\s+\d{1,2},?\s+\d{4}\s*/, "");
+    // Strip trailing ", American Canyon" or ", [City Name]"
+    rawDesc = rawDesc.replace(/,\s*American Canyon\.?\s*$/i, "");
+    // Strip title echo from description
+    if (rawDesc.startsWith(title)) rawDesc = rawDesc.slice(title.length);
+    rawDesc = rawDesc.trim();
 
     let link = titleEl.find("a").attr("href") || titleEl.closest("a").attr("href")
       || $(el).find("a").first().attr("href");
@@ -1109,13 +1173,17 @@ async function parseAmericanCanyon(f) {
     const when = startYMD ? apDateFromYMD(startYMD) : null;
     const whenFull = when ? when : "Date on website.";
 
+    const acDesc = rawDesc && rawDesc.length > 5
+      ? normalizeExcerpt(truncate(rawDesc, 260))
+      : normalizeExcerpt("City of American Canyon community event. Details on website.");
+
     events.push({
       title,
       url: fullUrl,
       when: whenFull,
       startYMD,
       endYMD: startYMD,
-      details: normalizeExcerpt("City of American Canyon community event. Details on website."),
+      details: acDesc,
       price: "Price not provided.",
       address: locText ? `${locText}, American Canyon.` : "American Canyon.",
       town: "american-canyon",

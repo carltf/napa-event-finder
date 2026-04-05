@@ -669,6 +669,464 @@ async function parseCameo(listUrl, f) {
   return filterAndRank(events, f);
 }
 
+// -------------------- Month-name date parser --------------------
+const MONTH_NAMES_MAP = {
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+  july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+  jan: 0, feb: 1, mar: 2, apr: 3, jun: 5, jul: 6,
+  aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11,
+};
+
+function parseMonthDayYear(text) {
+  if (!text) return null;
+  let m;
+  // "7 April 2026" or "05 Apr 2026"
+  m = text.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+  if (m && MONTH_NAMES_MAP[m[2].toLowerCase()] !== undefined) {
+    return toISODate(new Date(Date.UTC(+m[3], MONTH_NAMES_MAP[m[2].toLowerCase()], +m[1])));
+  }
+  // "April 17, 2026"
+  m = text.match(/([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/);
+  if (m && MONTH_NAMES_MAP[m[1].toLowerCase()] !== undefined) {
+    return toISODate(new Date(Date.UTC(+m[3], MONTH_NAMES_MAP[m[1].toLowerCase()], +m[2])));
+  }
+  // "APRIL 7" (no year — assume current)
+  m = text.match(/([A-Za-z]+)\s+(\d{1,2})(?:\s|$|,)/);
+  if (m && MONTH_NAMES_MAP[m[1].toLowerCase()] !== undefined) {
+    const yr = new Date().getUTCFullYear();
+    return toISODate(new Date(Date.UTC(yr, MONTH_NAMES_MAP[m[1].toLowerCase()], +m[2])));
+  }
+  return null;
+}
+
+// -------------------- Parser: Cameo Films (coming-soon) --------------------
+async function parseCameoFilms(f) {
+  const listUrl = "https://www.cameocinema.com/coming-soon";
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+  const events = [];
+  const seen = new Set();
+
+  $("h2").each((_, el) => {
+    const title = cleanText($(el).text());
+    if (!title || title.length < 2 || title.length > 120) return;
+    if (isGenericTitle(title)) return;
+    if (/cameo|coming soon|now showing|showtimes/i.test(title)) return;
+    if (seen.has(title.toLowerCase())) return;
+    seen.add(title.toLowerCase());
+
+    const container = $(el).closest("div.sqs-block, div.col, article, section, li").first();
+    const blockText = container.length ? container.text() : $(el).parent().text();
+    const startYMD = parseMonthDayYear(blockText);
+
+    let link = $(el).find("a[href*='/movie/']").attr("href")
+      || $(el).closest("a").attr("href")
+      || (container.length ? container.find("a[href*='/movie/']").attr("href") : null);
+    const fullUrl = link
+      ? (link.startsWith("http") ? link : "https://www.cameocinema.com" + link)
+      : listUrl;
+
+    events.push({
+      title,
+      url: fullUrl,
+      when: startYMD ? apDateFromYMD(startYMD) : "Dates on website.",
+      startYMD,
+      endYMD: startYMD,
+      details: "Now showing at Cameo Cinema, St. Helena's beloved independent theater.",
+      price: "Price not provided.",
+      address: "1340 Main St., St. Helena.",
+      town: "st-helena",
+      tag: "movies",
+      geo: GEO_HINTS["st-helena"],
+    });
+  });
+
+  return filterAndRank(events, f);
+}
+
+// -------------------- Parser: Cameo Film Class --------------------
+async function parseCameoFilmClass(f) {
+  const listUrl = "https://www.cameocinema.com/film-class-calendar";
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+  const events = [];
+
+  $("div.sqs-block, div.sqs-block-content, article, section, .eventlist-event").each((_, el) => {
+    const text = $(el).text();
+    if (!text || text.length < 20) return;
+
+    const dateYMD = parseMonthDayYear(text);
+    if (!dateYMD) return;
+
+    const boldEl = $(el).find("strong, b").first();
+    let title = boldEl.length ? cleanText(boldEl.text()) : null;
+    if (!title || title.length < 2) return;
+    title = title.replace(/\s*\([\d,\s]+min\w*\)\s*/i, "").replace(/\s*\(\d{4}\)\s*/, "").trim();
+    if (!title) return;
+
+    const timeMatch = text.match(/(\d{1,2}:\d{2})\s*(am|pm)/i);
+    let timeText = null;
+    if (timeMatch) {
+      let h = parseInt(timeMatch[1].split(":")[0], 10);
+      const mm = timeMatch[1].split(":")[1];
+      const ampm = timeMatch[2].toLowerCase() === "pm" ? "p.m." : "a.m.";
+      if (h > 12) h -= 12;
+      timeText = mm === "00" ? `${h} ${ampm}` : `${h}:${mm} ${ampm}`;
+    }
+
+    const allText = cleanText($(el).text());
+    let desc = allText;
+    const titleIdx = desc.indexOf(title);
+    if (titleIdx >= 0) desc = desc.slice(titleIdx + title.length);
+    desc = desc.replace(/^\s*\([\d,\s\w]+\)\s*/, "").trim();
+    const sentMatch = desc.match(/^[^.!?]+[.!?]/);
+    desc = sentMatch ? truncate(sentMatch[0], 260) : truncate(desc, 260);
+    desc = normalizeExcerpt(desc || "Film Class at Cameo Cinema.");
+
+    const when = apDateFromYMD(dateYMD);
+    const whenFull = when ? (timeText ? `${when}, ${timeText}` : when) : "Date on website.";
+
+    events.push({
+      title: `Film Class: ${title}`,
+      url: listUrl,
+      when: whenFull,
+      startYMD: dateYMD,
+      endYMD: dateYMD,
+      details: desc,
+      price: "$10.",
+      address: "1340 Main St., St. Helena.",
+      town: "st-helena",
+      tag: "art",
+      geo: GEO_HINTS["st-helena"],
+    });
+  });
+
+  return filterAndRank(events, f);
+}
+
+// -------------------- Parser: Brannan Center --------------------
+async function parseBrannanCenter(f) {
+  const listUrl = "https://www.brannancenter.org/events";
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+  const events = [];
+  const seen = new Set();
+
+  $(".eventlist-event, article, .summary-item, .sqs-block").each((_, el) => {
+    const titleEl = $(el).find("h1, h2, h3, .eventlist-title, .summary-title").first();
+    const title = cleanText(titleEl.text());
+    if (!title || title.length < 2) return;
+    if (/private|rental/i.test(title)) return;
+    if (seen.has(title.toLowerCase())) return;
+    seen.add(title.toLowerCase());
+
+    const blockText = $(el).text();
+    const startYMD = parseMonthDayYear(blockText);
+
+    const tagText = cleanText(
+      $(el).find(".eventlist-cats, .summary-metadata, .event-category, [class*='tag'], [class*='cat']").text()
+    ).toLowerCase();
+    let tag;
+    if (/jazz|music/.test(tagText)) tag = "music";
+    else if (/comedy/.test(tagText)) tag = "nightlife";
+    else if (/classical|theater|theatre|dance/.test(tagText)) tag = "art";
+    else if (/class|workshop/.test(tagText)) tag = "wellness";
+    else if (/film/.test(tagText)) tag = "movies";
+    else tag = classifyTag(title, blockText);
+    if (tag === "any") tag = "art";
+
+    const descEl = $(el).find(".eventlist-description, .summary-excerpt, p").first();
+    let desc = cleanText(descEl.text());
+    desc = normalizeExcerpt(truncate(desc || "Event at the Brannan Center, Calistoga.", 260));
+
+    const timeEl = $(el).find(".event-time-12hr, .eventlist-meta-time, time").first();
+    const timeTxt = cleanText(timeEl.text());
+    const when = startYMD ? apDateFromYMD(startYMD) : null;
+    const whenFull = when ? (timeTxt ? `${when}, ${timeTxt}` : when) : "Date on website.";
+
+    let link = titleEl.find("a").attr("href") || titleEl.closest("a").attr("href")
+      || $(el).find("a[href*='/events/']").attr("href");
+    const fullUrl = link
+      ? (link.startsWith("http") ? link : "https://www.brannancenter.org" + link)
+      : listUrl;
+
+    events.push({
+      title,
+      url: fullUrl,
+      when: whenFull,
+      startYMD,
+      endYMD: startYMD,
+      details: desc,
+      price: "Price not provided.",
+      address: "1407 3rd Street, Calistoga.",
+      town: "calistoga",
+      tag,
+      geo: GEO_HINTS["calistoga"],
+    });
+  });
+
+  return filterAndRank(events, f);
+}
+
+// -------------------- Parser: Napa County Library (CivicEngage) --------------------
+const LIBRARY_TITLE_BLOCKLIST = /storytime|story\s*time|wee\s*wednesday|baby\s*lap|laptime|toddler\s*time|homework\s*help|bilingual\s*storytime/i;
+
+async function parseNapaCountyLibrary(calendarId, townSlug, cityName, f) {
+  const listUrl = `https://www.napacounty.gov/calendar.aspx?CID=${calendarId}`;
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+  const events = [];
+  const seen = new Set();
+
+  const sourceName = calendarId === 59 ? "Napa County Library"
+    : calendarId === 55 ? "Yountville Library"
+    : "Napa County Library";
+
+  $("a[href*='Calendar.aspx?EID='], a[href*='calendar.aspx?EID='], .calendarList tr, .calendar-event, [data-eventid]").each((_, el) => {
+    const linkEl = $(el).is("a") ? $(el) : $(el).find("a[href*='EID=']").first();
+    const href = linkEl.attr("href") || "";
+    const eidMatch = href.match(/EID=(\d+)/i);
+    const eid = eidMatch ? eidMatch[1] : null;
+    if (!eid) return;
+    if (seen.has(eid)) return;
+    seen.add(eid);
+
+    const title = cleanText(linkEl.text() || $(el).find(".calendar-title, .eventTitle, h3, h4").first().text());
+    if (!title || title.length < 3) return;
+    if (LIBRARY_TITLE_BLOCKLIST.test(title)) return;
+
+    const containerText = $(el).closest("tr, div, li").text() || $(el).text();
+    const isoMatch = containerText.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    let startYMD = null;
+    let timeText = null;
+    if (isoMatch) {
+      startYMD = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+      const h = parseInt(isoMatch[4], 10);
+      const mm = isoMatch[5];
+      const ampm = h >= 12 ? "p.m." : "a.m.";
+      const h12 = h % 12 || 12;
+      timeText = mm === "00" ? `${h12} ${ampm}` : `${h12}:${mm} ${ampm}`;
+    } else {
+      startYMD = parseMonthDayYear(containerText);
+    }
+
+    let tag = classifyTag(title, "");
+    if (tag === "any") tag = "art";
+
+    const when = startYMD ? apDateFromYMD(startYMD) : null;
+    const whenFull = when ? (timeText ? `${when}, ${timeText}` : when) : "Date on website.";
+    const fullUrl = `https://www.napacounty.gov/Calendar.aspx?EID=${eid}`;
+
+    events.push({
+      title,
+      url: fullUrl,
+      when: whenFull,
+      startYMD,
+      endYMD: startYMD,
+      details: normalizeExcerpt(`${sourceName} event. Details on website.`),
+      price: "Free.",
+      address: `${cityName}.`,
+      town: townSlug,
+      tag,
+      geo: GEO_HINTS[townSlug] || null,
+    });
+  });
+
+  return filterAndRank(events, f);
+}
+
+// -------------------- Parser: St. Helena Public Library --------------------
+const SHPL_TITLE_BLOCKLIST = /story\s*time|storytime|baby|toddler|kids\s*rock|teen\s*hang/i;
+
+async function parseStHelenaLibrary(f) {
+  const listUrl = "https://www.shpl.org/events";
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+  const events = [];
+  const seen = new Set();
+
+  $(".event-item, .event-listing, article, .views-row, li[class*='event'], .event-card, div[class*='event']").each((_, el) => {
+    const titleEl = $(el).find("h2, h3, h4, .event-title, .field-title a").first();
+    const title = cleanText(titleEl.text());
+    if (!title || title.length < 3) return;
+    if (SHPL_TITLE_BLOCKLIST.test(title)) return;
+    if (seen.has(title.toLowerCase())) return;
+    seen.add(title.toLowerCase());
+
+    const blockText = $(el).text();
+    const startYMD = parseMonthDayYear(blockText);
+
+    const timeMatch = blockText.match(/(\d{1,2}:\d{2})\s*(am|pm)/i);
+    let timeText = null;
+    if (timeMatch) {
+      let h = parseInt(timeMatch[1].split(":")[0], 10);
+      const mm = timeMatch[1].split(":")[1];
+      const ampm = timeMatch[2].toLowerCase() === "pm" ? "p.m." : "a.m.";
+      if (h > 12) h -= 12;
+      timeText = mm === "00" ? `${h} ${ampm}` : `${h}:${mm} ${ampm}`;
+    }
+
+    let link = titleEl.find("a").attr("href") || titleEl.attr("href") || titleEl.closest("a").attr("href")
+      || $(el).find("a").first().attr("href");
+    const fullUrl = link
+      ? (link.startsWith("http") ? link : "https://www.shpl.org" + link)
+      : listUrl;
+
+    let tag = classifyTag(title, blockText);
+    if (tag === "any") tag = "art";
+
+    const when = startYMD ? apDateFromYMD(startYMD) : null;
+    const whenFull = when ? (timeText ? `${when}, ${timeText}` : when) : "Date on website.";
+
+    events.push({
+      title,
+      url: fullUrl,
+      when: whenFull,
+      startYMD,
+      endYMD: startYMD,
+      details: normalizeExcerpt("St. Helena Public Library event. Details on website."),
+      price: "Free.",
+      address: "1492 Library Lane, St. Helena.",
+      town: "st-helena",
+      tag,
+      geo: GEO_HINTS["st-helena"],
+    });
+  });
+
+  return filterAndRank(events, f);
+}
+
+// -------------------- Parser: Town of Yountville --------------------
+const YOUNTVILLE_TITLE_BLOCKLIST = /planning\s*commission|city\s*council|\bboard\b|commission\s*meeting|public\s*hearing/i;
+
+async function parseTownOfYountville(f) {
+  const listUrl = "https://www.townofyountville.com/Calendar.aspx";
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+  const events = [];
+  const seen = new Set();
+
+  $("a[href*='Calendar.aspx?EID='], a[href*='calendar.aspx?EID='], .calendarList tr, .calendar-event, [data-eventid]").each((_, el) => {
+    const linkEl = $(el).is("a") ? $(el) : $(el).find("a[href*='EID=']").first();
+    const href = linkEl.attr("href") || "";
+    const eidMatch = href.match(/EID=(\d+)/i);
+    const eid = eidMatch ? eidMatch[1] : null;
+    if (!eid) return;
+    if (seen.has(eid)) return;
+    seen.add(eid);
+
+    const title = cleanText(linkEl.text() || $(el).find(".calendar-title, .eventTitle, h3, h4").first().text());
+    if (!title || title.length < 3) return;
+    if (YOUNTVILLE_TITLE_BLOCKLIST.test(title)) return;
+
+    const containerText = $(el).closest("tr, div, li").text() || $(el).text();
+    const isoMatch = containerText.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    let startYMD = null;
+    let timeText = null;
+    if (isoMatch) {
+      startYMD = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+      const h = parseInt(isoMatch[4], 10);
+      const mm = isoMatch[5];
+      const ampm = h >= 12 ? "p.m." : "a.m.";
+      const h12 = h % 12 || 12;
+      timeText = mm === "00" ? `${h12} ${ampm}` : `${h12}:${mm} ${ampm}`;
+    } else {
+      startYMD = parseMonthDayYear(containerText);
+    }
+
+    const catText = cleanText($(el).find("[class*='cat'], [class*='tag']").text()).toLowerCase();
+    let tag;
+    if (/yountville\s*arts/i.test(catText)) tag = "art";
+    else if (/fitness|exercise|yoga/i.test(catText) || /fitness|exercise|yoga/i.test(title)) tag = "wellness";
+    else tag = classifyTag(title, containerText);
+    if (tag === "any") tag = "art";
+
+    const locText = cleanText($(el).find(".location, .eventLocation, [class*='loc']").text());
+    const venueName = locText || "Yountville Community Center";
+
+    const when = startYMD ? apDateFromYMD(startYMD) : null;
+    const whenFull = when ? (timeText ? `${when}, ${timeText}` : when) : "Date on website.";
+    const fullUrl = `https://www.townofyountville.com/Calendar.aspx?EID=${eid}`;
+
+    events.push({
+      title,
+      url: fullUrl,
+      when: whenFull,
+      startYMD,
+      endYMD: startYMD,
+      details: normalizeExcerpt(`Town of Yountville event at ${venueName}. Details on website.`),
+      price: "Price not provided.",
+      address: "Yountville.",
+      town: "yountville",
+      tag,
+      geo: GEO_HINTS["yountville"],
+    });
+  });
+
+  return filterAndRank(events, f);
+}
+
+// -------------------- Parser: American Canyon --------------------
+const AC_CAT_ALLOWLIST = /community\s*events|music\s*&?\s*arts|adult\s*activities|youth\s*activities/i;
+const AC_CAT_BLOCKLIST = /meetings|city\s*holiday|ceremonies/i;
+const AC_TITLE_BLOCKLIST = /city\s*council|planning\s*commission|board\s*meeting/i;
+
+async function parseAmericanCanyon(f) {
+  const listUrl = "https://www.americancanyon.gov/Live/Community-Calendar";
+  const html = await fetchText(listUrl);
+  const $ = load(html);
+  const events = [];
+  const seen = new Set();
+
+  $(".event-item, .calendar-item, article, .views-row, li[class*='event'], .event-card, [class*='calendar-event']").each((_, el) => {
+    const titleEl = $(el).find("h2, h3, h4, .event-title, a[class*='title']").first();
+    const title = cleanText(titleEl.text());
+    if (!title || title.length < 3) return;
+    if (AC_TITLE_BLOCKLIST.test(title)) return;
+    if (seen.has(title.toLowerCase())) return;
+    seen.add(title.toLowerCase());
+
+    const catText = cleanText($(el).find("[class*='cat'], [class*='tag'], .category").text());
+    if (catText && AC_CAT_BLOCKLIST.test(catText)) return;
+    if (catText && !AC_CAT_ALLOWLIST.test(catText)) return;
+
+    const blockText = $(el).text();
+    const startYMD = parseMonthDayYear(blockText);
+
+    const locText = cleanText($(el).find(".location, .event-location, [class*='loc']").text());
+
+    let link = titleEl.find("a").attr("href") || titleEl.closest("a").attr("href")
+      || $(el).find("a").first().attr("href");
+    const fullUrl = link
+      ? (link.startsWith("http") ? link : "https://www.americancanyon.gov" + link)
+      : listUrl;
+
+    let tag;
+    if (/music\s*&?\s*arts/i.test(catText)) tag = "art";
+    else tag = classifyTag(title, blockText);
+    if (tag === "any") tag = "art";
+
+    const when = startYMD ? apDateFromYMD(startYMD) : null;
+    const whenFull = when ? when : "Date on website.";
+
+    events.push({
+      title,
+      url: fullUrl,
+      when: whenFull,
+      startYMD,
+      endYMD: startYMD,
+      details: normalizeExcerpt("City of American Canyon community event. Details on website."),
+      price: "Price not provided.",
+      address: locText ? `${locText}, American Canyon.` : "American Canyon.",
+      town: "american-canyon",
+      tag,
+      geo: GEO_HINTS["american-canyon"],
+    });
+  });
+
+  return filterAndRank(events, f);
+}
+
 // -------------------- Handler --------------------
 export default async function handler(req, res) {
   applyCors(req, res);
@@ -713,12 +1171,27 @@ export default async function handler(req, res) {
         if (s.id === "amcan_chamber") return await parseGrowthZone(s.listUrl, "american-canyon", filters);
         if (s.id === "calistoga_chamber") return await parseGrowthZone(s.listUrl, "calistoga", filters);
         if (s.id === "yountville_chamber") return await parseGrowthZone(s.listUrl, "yountville", filters);
-        if (s.id === "cameo") return await parseCameo(s.listUrl, filters);
+        if (s.id === "cameo") {
+          const films = await parseCameoFilms(filters);
+          return films.length ? films : await parseCameo(s.listUrl, filters);
+        }
         return [];
       } catch {
         return [];
       }
     });
+
+    // New source parsers (non-movies only, except Cameo Films handled above)
+    if (type !== "movies") {
+      const wrap = (fn) => (async () => { try { return await fn(); } catch { return []; } })();
+      tasks.push(wrap(() => parseCameoFilmClass(filters)));
+      tasks.push(wrap(() => parseBrannanCenter(filters)));
+      tasks.push(wrap(() => parseNapaCountyLibrary(59, "napa", "Napa", filters)));
+      tasks.push(wrap(() => parseNapaCountyLibrary(55, "yountville", "Yountville", filters)));
+      tasks.push(wrap(() => parseStHelenaLibrary(filters)));
+      tasks.push(wrap(() => parseTownOfYountville(filters)));
+      tasks.push(wrap(() => parseAmericanCanyon(filters)));
+    }
 
     let resultsArrays = [];
     let timedOut = false;

@@ -148,14 +148,26 @@ function parseISODate(s) {
 function titleCase(s) {
   if (!s) return s;
   const small = new Set(["a", "an", "the", "and", "but", "or", "for", "nor", "on", "at", "to", "by", "in", "of", "up"]);
+  let afterParen = false;
   return s
     .trim()
     .split(/\s+/)
     .map((w, i) => {
+      // Track if previous token ended with "(" or this token starts with "("
+      const startsWithParen = w.startsWith("(");
+      const bare = startsWithParen ? w.slice(1) : w;
+      const prefix = startsWithParen ? "(" : "";
+
       // Preserve words already in ALL CAPS (acronyms like "ACT", "EBT", "DJ")
-      if (w.length > 1 && w === w.toUpperCase() && /[A-Z]/.test(w)) return w;
-      const c = w.toLowerCase();
-      return i && small.has(c) ? c : c[0].toUpperCase() + c.slice(1);
+      if (bare.length > 1 && bare === bare.toUpperCase() && /[A-Z]/.test(bare)) {
+        afterParen = false;
+        return w;
+      }
+      const c = bare.toLowerCase();
+      // Capitalize: first word, first word after "(", or non-small words
+      const shouldCap = i === 0 || afterParen || startsWithParen || !small.has(c);
+      afterParen = w.endsWith("(");
+      return prefix + (shouldCap ? c[0].toUpperCase() + c.slice(1) : c);
     })
     .join(" ");
 }
@@ -753,20 +765,31 @@ async function parseCameoFilmClass(f) {
   const $ = load(html);
   const events = [];
 
-  $("div.sqs-block, div.sqs-block-content, article, section, .eventlist-event").each((_, el) => {
-    const text = $(el).text();
-    if (!text || text.length < 20) return;
+  // Iterate all bold/strong elements to find film titles (ALL CAPS names like "THE DEFIANT ONES")
+  const boldEls = $("strong, b").toArray();
+  for (const boldNode of boldEls) {
+    const boldText = cleanText($(boldNode).text());
+    if (!boldText || boldText.length < 3) continue;
 
-    const dateYMD = parseMonthDayYear(text);
-    if (!dateYMD) return;
+    // Film titles are ALL CAPS; skip date-only lines like "APRIL 7" and intro text
+    if (!/^[A-Z][A-Z\s'',!?:\-–—&]+$/.test(boldText)) continue;
+    // Skip if it looks like a month+day date
+    if (/^(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+\d{1,2}$/i.test(boldText)) continue;
 
-    const boldEl = $(el).find("strong, b").first();
-    let title = boldEl.length ? cleanText(boldEl.text()) : null;
-    if (!title || title.length < 2) return;
+    // Walk upward to find the containing block for context (date, time, description)
+    const container = $(boldNode).closest("div.sqs-block, div.sqs-block-content, article, section, p").first();
+    const blockText = container.length ? container.text() : $(boldNode).parent().parent().text();
+    if (!blockText || blockText.length < 20) continue;
+
+    const dateYMD = parseMonthDayYear(blockText);
+    if (!dateYMD) continue;
+
+    // Clean the film title — title-case it
+    let title = titleCase(boldText.toLowerCase());
     title = title.replace(/\s*\([\d,\s]+min\w*\)\s*/i, "").replace(/\s*\(\d{4}\)\s*/, "").trim();
-    if (!title) return;
+    if (!title || title.length < 2) continue;
 
-    const timeMatch = text.match(/(\d{1,2}:\d{2})\s*(am|pm)/i);
+    const timeMatch = blockText.match(/(\d{1,2}:\d{2})\s*(am|pm)/i);
     let timeText = null;
     if (timeMatch) {
       let h = parseInt(timeMatch[1].split(":")[0], 10);
@@ -776,11 +799,15 @@ async function parseCameoFilmClass(f) {
       timeText = mm === "00" ? `${h} ${ampm}` : `${h}:${mm} ${ampm}`;
     }
 
-    const allText = cleanText($(el).text());
+    // Description: find the paragraph text after the title, skipping year/runtime
+    const allText = cleanText(blockText);
     let desc = allText;
-    const titleIdx = desc.indexOf(title);
-    if (titleIdx >= 0) desc = desc.slice(titleIdx + title.length);
+    const titleUpper = boldText;
+    const titleIdx = desc.toUpperCase().indexOf(titleUpper);
+    if (titleIdx >= 0) desc = desc.slice(titleIdx + titleUpper.length);
     desc = desc.replace(/^\s*\([\d,\s\w]+\)\s*/, "").trim();
+    // Strip leading runtime like "96 min" or "(1958) 96 min"
+    desc = desc.replace(/^\d+\s*min\s*/i, "").trim();
     const sentMatch = desc.match(/^[^.!?]+[.!?]/);
     desc = sentMatch ? truncate(sentMatch[0], 260) : truncate(desc, 260);
     desc = normalizeExcerpt(desc || "Film Class at Cameo Cinema.");
@@ -801,7 +828,7 @@ async function parseCameoFilmClass(f) {
       tag: "art",
       geo: GEO_HINTS["st-helena"],
     });
-  });
+  }
 
   return filterAndRank(events, f);
 }
@@ -809,7 +836,7 @@ async function parseCameoFilmClass(f) {
 // -------------------- Parser: Brannan Center (Google Calendar API) --------------------
 const BRANNAN_GCAL_ID = "1upv6eaopbpe9qv79cabbhe6mubv3727@import.calendar.google.com";
 const BRANNAN_GCAL_KEY = "AIzaSyBNlYH01_9Hc5S1J9vuFmu2nUqBZJNAXxs";
-const BRANNAN_TITLE_BLOCKLIST = /private|rental|load\s*in|setup|teardown|sound\s*check/i;
+const BRANNAN_PUBLIC_ALLOWLIST = /comedy|jazz|classical|bluegrass|concert|performance|workshop|class|film|lecture|speaker|exhibition|reception|festival|camp|theater|theatre|dance|music|listening\s*room|showcase|mariachi|symphony|quartet|trio|ensemble|orchestra|recital|opera|cabaret|storytell/i;
 
 async function parseBrannanCenter(f) {
   try {
@@ -850,7 +877,10 @@ async function parseBrannanCenter(f) {
       // Strip Tripleseat "[D]" / "[T]" prefix
       title = title.replace(/^\[[A-Z]\]\s*/, "");
       if (!title || title.length < 3) continue;
-      if (BRANNAN_TITLE_BLOCKLIST.test(title)) continue;
+
+      // Allowlist: only include events with public programming signals
+      const matchText = title + " " + (item.description || "");
+      if (!BRANNAN_PUBLIC_ALLOWLIST.test(matchText)) continue;
 
       // Dedupe by title+date
       const startISO = item.start?.dateTime || item.start?.date || "";
@@ -1043,7 +1073,7 @@ async function parseStHelenaLibrary(f) {
 }
 
 // -------------------- Parser: Town of Yountville --------------------
-const YOUNTVILLE_TITLE_BLOCKLIST = /planning\s*commission|city\s*council|\bboard\b|commission\s*meeting|public\s*hearing/i;
+const YOUNTVILLE_TITLE_BLOCKLIST = /planning\s*commission|city\s*council|\bboard\b|commission\s*meeting|public\s*hearing|pickleball|open\s*gym|basketball|jazzercise/i;
 
 async function parseTownOfYountville(f) {
   const listUrl = "https://www.townofyountville.com/Calendar.aspx";
@@ -1064,6 +1094,8 @@ async function parseTownOfYountville(f) {
     const title = cleanText(linkEl.text() || $(el).find(".calendar-title, .eventTitle, h3, h4").first().text());
     if (!title || title.length < 3) return;
     if (YOUNTVILLE_TITLE_BLOCKLIST.test(title)) return;
+    // Skip rec scheduling format: titles with 2+ dashes ("Pickleball - Advanced - 10:30 Am - 12:30 Pm")
+    if ((title.match(/ - /g) || []).length >= 2) return;
 
     const containerText = $(el).closest("tr, div, li").text() || $(el).text();
     const isoMatch = containerText.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);

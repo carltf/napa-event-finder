@@ -1190,6 +1190,70 @@ async function parseStHelenaChamber(f) {
   }
 }
 
+// -------------------- Parser: NVC Estate Winery (Eventbrite) --------------------
+async function parseNVCWinery(f) {
+  try {
+    const listUrl = "https://www.eventbrite.com/d/ca--napa/nvc-estate-winery/";
+    const html = await fetchText(listUrl);
+    const $ = load(html);
+    const events = [];
+
+    // Eventbrite embeds JSON-LD with Event objects on search pages
+    const ldEvents = getJsonLdEvents($);
+
+    // Also check for itemListElement pattern (Eventbrite uses ListItem wrapping)
+    $("script[type='application/ld+json']").each((_, el) => {
+      try {
+        const data = JSON.parse($(el).text() || "{}");
+        const items = Array.isArray(data) ? data : (data.itemListElement || []);
+        for (const entry of items) {
+          const item = entry.item || entry;
+          if (item["@type"] === "Event") ldEvents.push(item);
+        }
+      } catch {}
+    });
+
+    const seen = new Set();
+    for (const ev of ldEvents) {
+      const title = cleanText(ev.name || "");
+      if (!title || !title.toLowerCase().includes("nvc")) continue;
+
+      const startYMD = ymdFromISO(ev.startDate) || (ev.startDate?.length === 10 ? ev.startDate : null);
+      const endYMD = ymdFromISO(ev.endDate) || startYMD;
+
+      const dedupeKey = title.toLowerCase() + "|" + (startYMD || "");
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const desc = cleanText(ev.description || "Wine education and tasting at Napa Valley College's on-campus teaching winery, the first community college winery in California.");
+      const eventUrl = ev.url || listUrl;
+
+      const timeRange = ev.startDate ? formatTimeRange(ev.startDate, ev.endDate || "") : null;
+      const when = startYMD ? apDateFromYMD(startYMD) : null;
+      const whenFull = when ? (timeRange ? `${when}, ${timeRange}` : when) : "Date on website.";
+
+      events.push({
+        title,
+        url: eventUrl,
+        when: whenFull,
+        startYMD,
+        endYMD,
+        details: normalizeExcerpt(truncate(desc, 260)),
+        price: "Price not provided.",
+        address: "2277 Napa-Vallejo Hwy, Napa.",
+        town: "napa",
+        tag: "food",
+        geo: GEO_HINTS["napa"],
+      });
+    }
+
+    return filterAndRank(events, f);
+  } catch (e) {
+    console.warn("parseNVCWinery failed:", e?.message || e);
+    return [];
+  }
+}
+
 // -------------------- Parser: Town of Yountville --------------------
 const YOUNTVILLE_TITLE_BLOCKLIST = /planning\s*commission|city\s*council|\bboard\b|commission\s*meeting|public\s*hearing|pickleball|open\s*gym|basketball|jazzercise/i;
 
@@ -1410,6 +1474,7 @@ export default async function handler(req, res) {
       tasks.push(wrap(() => parseTownOfYountville(filters)));
       tasks.push(wrap(() => parseAmericanCanyon(filters)));
       tasks.push(wrap(() => parseStHelenaChamber(filters)));
+      tasks.push(wrap(() => parseNVCWinery(filters)));
     }
 
     let resultsArrays = [];

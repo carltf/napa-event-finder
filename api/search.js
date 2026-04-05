@@ -148,25 +148,25 @@ function parseISODate(s) {
 function titleCase(s) {
   if (!s) return s;
   const small = new Set(["a", "an", "the", "and", "but", "or", "for", "nor", "on", "at", "to", "by", "in", "of", "up"]);
-  let afterParen = false;
+  let capNext = false;
   return s
     .trim()
     .split(/\s+/)
     .map((w, i) => {
-      // Track if previous token ended with "(" or this token starts with "("
+      // Track if this token starts with "("
       const startsWithParen = w.startsWith("(");
       const bare = startsWithParen ? w.slice(1) : w;
       const prefix = startsWithParen ? "(" : "";
 
       // Preserve words already in ALL CAPS (acronyms like "ACT", "EBT", "DJ")
       if (bare.length > 1 && bare === bare.toUpperCase() && /[A-Z]/.test(bare)) {
-        afterParen = false;
+        capNext = w.endsWith("(") || w.endsWith(":");
         return w;
       }
       const c = bare.toLowerCase();
-      // Capitalize: first word, first word after "(", or non-small words
-      const shouldCap = i === 0 || afterParen || startsWithParen || !small.has(c);
-      afterParen = w.endsWith("(");
+      // Capitalize: first word, after "(", after ":", or non-small words
+      const shouldCap = i === 0 || capNext || startsWithParen || !small.has(c);
+      capNext = w.endsWith("(") || w.endsWith(":");
       return prefix + (shouldCap ? c[0].toUpperCase() + c.slice(1) : c);
     })
     .join(" ");
@@ -775,6 +775,8 @@ async function parseCameoFilmClass(f) {
     if (!/^[A-Z][A-Z\s'',!?:\-–—&]+$/.test(boldText)) continue;
     // Skip if it looks like a month+day date
     if (/^(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\s+\d{1,2}$/i.test(boldText)) continue;
+    // Skip monthly section headers like "APRIL FILM CLASS WITH TERENCE FORD"
+    if (/\bFILM\s+CLASS\b/i.test(boldText)) continue;
 
     // Walk upward to find the containing block for context (date, time, description)
     const container = $(boldNode).closest("div.sqs-block, div.sqs-block-content, article, section, p").first();
@@ -958,21 +960,14 @@ async function parseNapaCountyLibrary(calendarId, townSlug, cityName, f) {
     : calendarId === 55 ? "Yountville Library"
     : "Napa County Library";
 
-  $("a[href*='Calendar.aspx?EID='], a[href*='calendar.aspx?EID='], .calendarList tr, .calendar-event, [data-eventid]").each((_, el) => {
-    const linkEl = $(el).is("a") ? $(el) : $(el).find("a[href*='EID=']").first();
-    const href = linkEl.attr("href") || "";
-    const eidMatch = href.match(/EID=(\d+)/i);
-    const eid = eidMatch ? eidMatch[1] : null;
-    if (!eid) return;
-    if (seen.has(eid)) return;
-    seen.add(eid);
-
-    const title = cleanText(linkEl.text() || $(el).find(".calendar-title, .eventTitle, h3, h4").first().text());
+  // CivicEngage embeds Schema.org microdata in hidden divs for each event
+  $("[itemtype='http://schema.org/Event']").each((_, el) => {
+    const title = cleanText($(el).find("[itemprop='name']").first().text());
     if (!title || title.length < 3) return;
     if (LIBRARY_TITLE_BLOCKLIST.test(title)) return;
 
-    const containerText = $(el).closest("tr, div, li").text() || $(el).text();
-    const isoMatch = containerText.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    const startDateStr = $(el).find("[itemprop='startDate']").text();
+    const isoMatch = (startDateStr || "").match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
     let startYMD = null;
     let timeText = null;
     if (isoMatch) {
@@ -982,16 +977,31 @@ async function parseNapaCountyLibrary(calendarId, townSlug, cityName, f) {
       const ampm = h >= 12 ? "p.m." : "a.m.";
       const h12 = h % 12 || 12;
       timeText = mm === "00" ? `${h12} ${ampm}` : `${h12}:${mm} ${ampm}`;
-    } else {
-      startYMD = parseMonthDayYear(containerText);
     }
 
-    let tag = classifyTag(title, "");
+    const dedupeKey = title.toLowerCase() + "|" + (startYMD || "");
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+
+    const desc = cleanText($(el).find("[itemprop='description']").text());
+    const locName = cleanText($(el).find("[itemprop='location'] [itemprop='name']").text());
+    const street = cleanText($(el).find("[itemprop='streetAddress']").text());
+    const address = street ? `${street}, ${cityName}.` : (locName ? `${locName}, ${cityName}.` : `${cityName}.`);
+
+    // Find the EID link in the parent container
+    const parentDiv = $(el).closest("div[id^='parentdiv']");
+    const eidLink = parentDiv.find("a[href*='EID=']").attr("href") || "";
+    const eidMatch = eidLink.match(/EID=(\d+)/i);
+    const eid = eidMatch ? eidMatch[1] : null;
+    const fullUrl = eid
+      ? `https://www.napacounty.gov/Calendar.aspx?EID=${eid}`
+      : listUrl;
+
+    let tag = classifyTag(title, desc);
     if (tag === "any") tag = "art";
 
     const when = startYMD ? apDateFromYMD(startYMD) : null;
     const whenFull = when ? (timeText ? `${when}, ${timeText}` : when) : "Date on website.";
-    const fullUrl = `https://www.napacounty.gov/Calendar.aspx?EID=${eid}`;
 
     events.push({
       title,
@@ -999,9 +1009,9 @@ async function parseNapaCountyLibrary(calendarId, townSlug, cityName, f) {
       when: whenFull,
       startYMD,
       endYMD: startYMD,
-      details: normalizeExcerpt(`${sourceName} event. Details on website.`),
+      details: normalizeExcerpt(desc || `${sourceName} event. Details on website.`),
       price: "Free.",
-      address: `${cityName}.`,
+      address,
       town: townSlug,
       tag,
       geo: GEO_HINTS[townSlug] || null,
@@ -1020,20 +1030,31 @@ async function parseStHelenaLibrary(f) {
   const $ = load(html);
   const events = [];
   const seen = new Set();
+  const currentYear = new Date().getUTCFullYear();
 
-  $(".event-item, .event-listing, article, .views-row, li[class*='event'], .event-card, div[class*='event']").each((_, el) => {
-    const titleEl = $(el).find("h2, h3, h4, .event-title, .field-title a").first();
+  // Drupal Stacks CMS: each event is an li.events-list-item
+  $("li.events-list-item").each((_, el) => {
+    const titleEl = $(el).find(".eventinstance a, .field--name-title a").first();
     const title = cleanText(titleEl.text());
     if (!title || title.length < 3) return;
     if (SHPL_TITLE_BLOCKLIST.test(title)) return;
-    if (seen.has(title.toLowerCase())) return;
-    seen.add(title.toLowerCase());
 
-    const blockText = $(el).text();
-    const startYMD = parseMonthDayYear(blockText);
+    // Date: <span class="listing-date-month">Apr</span><span class="listing-date-day">7</span>
+    const month = cleanText($(el).find(".listing-date-month").text());
+    const day = cleanText($(el).find(".listing-date-day").text());
+    let startYMD = null;
+    if (month && day) {
+      startYMD = parseMonthDayYear(`${month} ${day} ${currentYear}`);
+    }
 
-    const timeMatch = blockText.match(/(\d{1,2}:\d{2})\s*(am|pm)/i);
+    const dedupeKey = title.toLowerCase() + "|" + (startYMD || "");
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+
+    // Time: "5:30 pm - 7:00 pm PDT"
+    const timeStr = cleanText($(el).find(".event-listing-time").text());
     let timeText = null;
+    const timeMatch = (timeStr || "").match(/(\d{1,2}:\d{2})\s*(am|pm)/i);
     if (timeMatch) {
       let h = parseInt(timeMatch[1].split(":")[0], 10);
       const mm = timeMatch[1].split(":")[1];
@@ -1042,13 +1063,16 @@ async function parseStHelenaLibrary(f) {
       timeText = mm === "00" ? `${h} ${ampm}` : `${h}:${mm} ${ampm}`;
     }
 
-    let link = titleEl.find("a").attr("href") || titleEl.attr("href") || titleEl.closest("a").attr("href")
-      || $(el).find("a").first().attr("href");
-    const fullUrl = link
-      ? (link.startsWith("http") ? link : "https://www.shpl.org" + link)
+    // Description
+    const desc = cleanText($(el).find(".event-listing-description").text());
+
+    // Link
+    const href = titleEl.attr("href") || "";
+    const fullUrl = href
+      ? (href.startsWith("http") ? href : "https://www.shpl.org" + href)
       : listUrl;
 
-    let tag = classifyTag(title, blockText);
+    let tag = classifyTag(title, desc);
     if (tag === "any") tag = "art";
 
     const when = startYMD ? apDateFromYMD(startYMD) : null;
@@ -1060,7 +1084,7 @@ async function parseStHelenaLibrary(f) {
       when: whenFull,
       startYMD,
       endYMD: startYMD,
-      details: normalizeExcerpt("St. Helena Public Library event. Details on website."),
+      details: normalizeExcerpt(truncate(desc || "St. Helena Public Library event. Details on website.", 260)),
       price: "Free.",
       address: "1492 Library Lane, St. Helena.",
       town: "st-helena",
@@ -1070,6 +1094,100 @@ async function parseStHelenaLibrary(f) {
   });
 
   return filterAndRank(events, f);
+}
+
+// -------------------- Parser: St. Helena Chamber (WP REST API) --------------------
+const STHELENA_CAT_MAP = {
+  477: "art",       // Arts & Culture
+  478: "any",       // Family-Friendly
+  497: "any",       // Featured
+  479: "food",      // Food & Wine
+  480: "food",      // Harvest
+  481: "any",       // Holidays
+  482: "nightlife", // Nightlife
+  483: "wellness",  // Outdoor Activities
+  484: "any",       // Shopping
+  485: "wellness",  // Wellness & Relaxation
+  486: "art",       // Workshops & Classes
+};
+
+async function parseStHelenaChamber(f) {
+  try {
+    const apiUrl = "https://www.sthelena.com/wp-json/wp/v2/event?per_page=15&orderby=date&order=desc&_embed";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    let data;
+    try {
+      const res = await fetch(apiUrl, {
+        headers: { "Accept": "application/json" },
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`WP API ${res.status}`);
+      data = await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!Array.isArray(data) || data.length === 0) return [];
+
+    const events = [];
+    for (const post of data) {
+      const title = cleanText(post.title?.rendered || "");
+      if (!title || title.length < 3) continue;
+
+      // Get categories from embedded terms
+      const catIds = post["event-cat"] || [];
+      const embeddedTerms = post._embedded?.["wp:term"]?.[0] || [];
+      const catSlugs = embeddedTerms.map((t) => t.slug);
+
+      // Skip wine-only events
+      if (catSlugs.length === 1 && catSlugs[0] === "food-wine") continue;
+
+      // Map category
+      let tag = "any";
+      for (const cid of catIds) {
+        const mapped = STHELENA_CAT_MAP[cid];
+        if (mapped && mapped !== "any") { tag = mapped; break; }
+      }
+      if (tag === "any") tag = classifyTag(title, "");
+      if (tag === "any") tag = "art";
+
+      // Extract event date from content HTML using parseMonthDayYear
+      const contentHtml = post.content?.rendered || "";
+      const contentText = cleanText(contentHtml.replace(/<[^>]+>/g, " "));
+      let startYMD = parseMonthDayYear(contentText);
+
+      // Description: strip HTML, first sentence
+      let desc = contentText;
+      const sentMatch = desc.match(/^[^.!?]+[.!?]/);
+      desc = sentMatch ? truncate(sentMatch[0], 260) : truncate(desc, 260);
+      desc = normalizeExcerpt(desc || "Event in St. Helena. Details on website.");
+
+      const eventUrl = post.link || `https://www.sthelena.com/event/${post.slug}/`;
+
+      const when = startYMD ? apDateFromYMD(startYMD) : null;
+      const whenFull = when || "Date on website.";
+
+      events.push({
+        title,
+        url: eventUrl,
+        when: whenFull,
+        startYMD,
+        endYMD: startYMD,
+        details: desc,
+        price: "Price not provided.",
+        address: "St. Helena.",
+        town: "st-helena",
+        tag,
+        geo: GEO_HINTS["st-helena"],
+      });
+    }
+
+    return filterAndRank(events, f);
+  } catch (e) {
+    console.warn("parseStHelenaChamber failed:", e?.message || e);
+    return [];
+  }
 }
 
 // -------------------- Parser: Town of Yountville --------------------
@@ -1291,6 +1409,7 @@ export default async function handler(req, res) {
       tasks.push(wrap(() => parseStHelenaLibrary(filters)));
       tasks.push(wrap(() => parseTownOfYountville(filters)));
       tasks.push(wrap(() => parseAmericanCanyon(filters)));
+      tasks.push(wrap(() => parseStHelenaChamber(filters)));
     }
 
     let resultsArrays = [];

@@ -177,7 +177,9 @@ architecture.
 
 - **Cheerio import variance:** `load = cheerioNS.load || cheerioNS.default?.load` — always use this pattern, with a throw fallback
 - **Source layout changes:** Cheerio selectors break when upstream sites redesign — each parser needs monitoring
-- **NapaLife issue number:** `listUrl` is pinned to one weekly issue and must be bumped; a stale URL silently yields old events
+- **Character encoding varies per NapaLife issue:** 7603 was UTF-8, 7604 was UTF-16LE — both served as `text/html` with **no charset**. `fetchText()` sniffs the BOM (`decodeBuffer()`); without that, Cheerio parses zero elements and the source dies silently. **Never assume UTF-8 from a Word-generated source.**
+- **NapaLife issue number:** `listUrl` is pinned to one weekly issue and must be bumped; a stale URL silently yields old events, and a new issue may arrive in a different encoding — always verify a non-zero count after bumping
+- **Silent zero-event sources:** a parser that matches nothing returns `[]`, not an error, and the handler swallows per-source failures by design. The API still reports `ok: true`. Per-source counts in the response meta remain an open todo.
 - **Rate limiting:** sources may block repeated scraping — in-memory cache helps but is not persistent
 - **Empty/malformed pages:** `extractOrFallback()` catches these — returns stub or null
 - **Cameo Cinema:** no structured date data — always returns "Showtimes on website." for `when`

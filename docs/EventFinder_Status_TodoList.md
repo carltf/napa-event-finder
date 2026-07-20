@@ -36,9 +36,16 @@ Legend: ✅ done · 🔄 in progress / known issue · ○ not started · ⏸ pau
   `listUrl https://www.napalife.org/7603.html`. Tests: `test_parseNapaLife.mjs`
   + `test/napalife_fixture.html` — **19/19 passing**. Live parse: 265 events,
   67 in a 7-day window.
+- ✅ **Encoding fix — July 20, 2026.** `fetchText()` now decodes by BOM
+  (`decodeBuffer()`), not by assuming UTF-8. Issue 7604 is UTF-16LE served with
+  no charset; the old code produced mojibake and Cheerio parsed **zero
+  elements**, so NapaLife silently returned 0 events without erroring. Guarded
+  by `test_decodeBuffer.mjs` (13/13). UTF-8 sources are unaffected.
+- ✅ **Bumped NapaLife to issue 7604** (July 20, 2026) — 235 events parsed.
 - 🔄 **NapaLife issue URL is pinned** — the issue number increments weekly and
   must be bumped in `sources.json` + `SOURCES`. A stale URL silently serves old
-  events.
+  events. **Always verify a non-zero count after bumping** — encoding varies
+  between issues.
 - ○ **Add a "latest issue" discovery step for NapaLife** so the URL self-updates
 - ○ Add parser for Napa Valley Register events calendar
 - ○ Add parser for Festival Napa Valley
@@ -155,6 +162,9 @@ Legend: ✅ done · 🔄 in progress / known issue · ○ not started · ⏸ pau
   classifier, but the wrapper overrides it with the coarser `classifyTag` from
   `api/search.js`. Intentional (single source of truth) but produces some odd
   categories. Revisit if categories look wrong.
+- 🔺 **Silent zero-event sources are the top monitoring gap.** The 7604 encoding
+  bug proved a source can go dead while the API still returns `ok: true`. A
+  per-source count in the response meta would have caught it instantly.
 - ○ Set up monthly check: run all parsers and verify event counts are non-zero
 - ○ Add source-level error reporting to API response meta
 - ○ Create test fixtures for remaining sources (NapaLife has one)

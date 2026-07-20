@@ -78,7 +78,8 @@ Live widget:https://napa-event-finder.vercel.app/widget.html
 
 - `api/search.js` → **the entire backend** (Vercel serverless handler). Not a root `search.js`.
 - `parseNapaLife.mjs` → NapaLife multi-event parser (repo root; imported as `../parseNapaLife.mjs`)
-- `test_parseNapaLife.mjs` + `test/napalife_fixture.html` → parser tests (`node test_parseNapaLife.mjs`)
+- `test_parseNapaLife.mjs` + `test/napalife_fixture.html` → parser tests (`node test_parseNapaLife.mjs`) — 19/19
+- `test_decodeBuffer.mjs` → BOM/encoding regression test (`node test_decodeBuffer.mjs`) — 13/13
 - `sources.json` → scrape source list
 - `widget.html` → standalone Squarespace embed
 - `vercel.json` → rewrites `/` and `/widget` to `widget.html`

@@ -75,10 +75,30 @@ Rutherford and Oakville added July 19, 2026 (NapaLife has events in both).
 
 - Parser: `parseNapaLife.mjs` (repo root) — imported into `api/search.js` as `../parseNapaLife.mjs`
 - Wrapper: `parseNapaLifeSource()` re-derives `geo` and `tag` from `api/search.js`
-- `listUrl`: `https://www.napalife.org/7603.html` — **issue number increments weekly, bump it in `sources.json` + `SOURCES`**
+- `listUrl`: `https://www.napalife.org/7604.html` — **issue number increments weekly, bump it in `sources.json` + `SOURCES`**
 - Type `calendar`, so the movies-only filter skips it
-- Tests: `test_parseNapaLife.mjs` + `test/napalife_fixture.html` — 19/19 passing
-- Live parse on July 19, 2026: 265 events, 67 within a 7-day window
+- Tests: `test_parseNapaLife.mjs` (19/19) + `test_decodeBuffer.mjs` (13/13)
+- Live parse: issue 7603 → 265 events; issue 7604 → 235 events
+
+> ⚠️ **After bumping the issue number, always verify a non-zero event count.**
+> Issue 7604 was served as **UTF-16LE** while 7603 was UTF-8 — the encoding
+> varies between issues and the server sends no charset. See "Encoding" below.
+
+## Encoding — `decodeBuffer()`
+
+`fetchText()` decodes response bytes by **sniffing the byte-order mark**, not by
+assuming UTF-8:
+
+| BOM | Encoding |
+|---|---|
+| `ff fe` | utf-16le |
+| `fe ff` | utf-16be |
+| none | utf-8 (unchanged behaviour) |
+
+**Why it exists:** NapaLife 7604 was UTF-16LE served as `text/html` with no
+charset. `res.text()` decoded it as UTF-8 → NUL-interleaved mojibake → Cheerio
+parsed **zero elements**. The source returned 0 events *without erroring* — a
+green deploy with a dead source. Guarded by `test_decodeBuffer.mjs`.
 
 ## Cache & Timeout Settings
 

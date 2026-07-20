@@ -84,7 +84,7 @@ const SOURCES = [
   { id: "calistoga_chamber", name: "Calistoga Chamber", type: "calendar", listUrl: "https://chamber.calistogachamber.net/events" },
   { id: "yountville_chamber", name: "Yountville Chamber", type: "calendar", listUrl: "https://web.yountvillechamber.com/events" },
   { id: "visit_napa_valley", name: "Visit Napa Valley", type: "calendar", listUrl: "https://www.visitnapavalley.com/events/" },
-  { id: "napalife", name: "NapaLife", type: "calendar", listUrl: "https://www.napalife.org/7603.html" },
+  { id: "napalife", name: "NapaLife", type: "calendar", listUrl: "https://www.napalife.org/7604.html" },
   {
     id: "cameo",
     name: "Cameo Cinema",
@@ -320,6 +320,20 @@ function formatWeekender(e) {
 }
 
 // -------------------- Fetch helper --------------------
+// Decode response bytes by sniffing the byte-order mark rather than assuming
+// UTF-8. NapaLife's Word export varies between issues: 7603 was UTF-8, 7604 was
+// UTF-16LE served as "text/html" with NO charset in the Content-Type. res.text()
+// then decodes UTF-16 as UTF-8, producing NUL-interleaved mojibake that Cheerio
+// parses into zero elements — a silent zero-event source, not an error.
+// UTF-8 input has no BOM and takes the same path as before, so this is a no-op
+// for every other source.
+export function decodeBuffer(buf) {
+  const b = new Uint8Array(buf);
+  if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return new TextDecoder("utf-16le").decode(b);
+  if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) return new TextDecoder("utf-16be").decode(b);
+  return new TextDecoder("utf-8").decode(b);
+}
+
 async function fetchText(url) {
   const key = "GET:" + url;
   const cached = getCached(key);
@@ -338,7 +352,7 @@ async function fetchText(url) {
     });
 
     if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
-    const txt = await res.text();
+    const txt = decodeBuffer(await res.arrayBuffer());
     setCached(key, txt);
     return txt;
   } finally {

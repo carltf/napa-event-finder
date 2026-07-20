@@ -1474,10 +1474,30 @@ export default async function handler(req, res) {
       endISO: end ? toISODate(end) : null,
     };
 
-    const tasks = SOURCES.map(async (s) => {
-      try {
-        if (type === "movies" && s.type !== "movies") return [];
-        if (type !== "movies" && s.type === "movies") return [];
+    // Every source task resolves to { id, events, ... } so the response can
+    // report a per-source count. A source that returns zero events is NOT an
+    // error — the handler swallows per-source failures by design — so without
+    // these counts a dead source is indistinguishable from a quiet one. That is
+    // exactly how the NapaLife UTF-16 bug hid (July 20, 2026).
+    // Return SKIPPED (null) to mark "deliberately not run for this query".
+    const SKIPPED = null;
+    const labeled = (id, fn) =>
+      (async () => {
+        const t0 = Date.now();
+        try {
+          const events = await fn();
+          if (events === SKIPPED) return { id, events: [], count: 0, skipped: true, ms: Date.now() - t0 };
+          const arr = Array.isArray(events) ? events : [];
+          return { id, events: arr, count: arr.length, ms: Date.now() - t0 };
+        } catch (e) {
+          return { id, events: [], count: 0, error: e?.message || String(e), ms: Date.now() - t0 };
+        }
+      })();
+
+    const tasks = SOURCES.map((s) =>
+      labeled(s.id, async () => {
+        if (type === "movies" && s.type !== "movies") return SKIPPED;
+        if (type !== "movies" && s.type === "movies") return SKIPPED;
 
         if (s.id === "donapa") return await parseDoNapa(s.listUrl, filters);
         if (s.id === "napa_library") return await parseNapaLibrary(s.listUrl, filters);
@@ -1490,24 +1510,21 @@ export default async function handler(req, res) {
           const films = await parseCameoFilms(filters);
           return films.length ? films : await parseCameo(s.listUrl, filters);
         }
-        return [];
-      } catch {
-        return [];
-      }
-    });
+        return SKIPPED;
+      })
+    );
 
     // New source parsers (non-movies only, except Cameo Films handled above)
     if (type !== "movies") {
-      const wrap = (fn) => (async () => { try { return await fn(); } catch { return []; } })();
-      tasks.push(wrap(() => parseCameoFilmClass(filters)));
-      tasks.push(wrap(() => parseBrannanCenter(filters)));
-      tasks.push(wrap(() => parseNapaCountyLibrary(59, "napa", "Napa", filters)));
-      tasks.push(wrap(() => parseNapaCountyLibrary(55, "yountville", "Yountville", filters)));
-      tasks.push(wrap(() => parseStHelenaLibrary(filters)));
-      tasks.push(wrap(() => parseTownOfYountville(filters)));
-      tasks.push(wrap(() => parseAmericanCanyon(filters)));
-      tasks.push(wrap(() => parseStHelenaChamber(filters)));
-      tasks.push(wrap(() => parseNVCWinery(filters)));
+      tasks.push(labeled("cameo_film_class", () => parseCameoFilmClass(filters)));
+      tasks.push(labeled("brannan_center", () => parseBrannanCenter(filters)));
+      tasks.push(labeled("napa_county_library", () => parseNapaCountyLibrary(59, "napa", "Napa", filters)));
+      tasks.push(labeled("yountville_library", () => parseNapaCountyLibrary(55, "yountville", "Yountville", filters)));
+      tasks.push(labeled("sthelena_library", () => parseStHelenaLibrary(filters)));
+      tasks.push(labeled("town_of_yountville", () => parseTownOfYountville(filters)));
+      tasks.push(labeled("american_canyon_city", () => parseAmericanCanyon(filters)));
+      tasks.push(labeled("sthelena_chamber", () => parseStHelenaChamber(filters)));
+      tasks.push(labeled("nvc_winery", () => parseNVCWinery(filters)));
     }
 
     let resultsArrays = [];
@@ -1518,12 +1535,28 @@ export default async function handler(req, res) {
     } catch {
       timedOut = true;
       const settled = await Promise.allSettled(tasks);
-      resultsArrays = settled.filter((r) => r.status === "fulfilled").map((r) => r.value || []);
+      resultsArrays = settled
+        .filter((r) => r.status === "fulfilled")
+        .map((r) => r.value || { id: "unknown", events: [], count: 0 });
     }
+
+    // Per-source meta. Counts are AFTER town/type/date filtering but BEFORE
+    // cross-source dedupe and the `limit` slice, so they answer "is this source
+    // alive and matching?" rather than "what made the response?".
+    const sourceMeta = resultsArrays.map((r) => {
+      const m = { id: r.id, count: r.count, ms: r.ms };
+      if (r.skipped) m.skipped = true;
+      if (r.error) m.error = r.error;
+      return m;
+    });
+
+    // A source that ran (not skipped, no error) and produced nothing is the
+    // silent-failure shape worth surfacing on its own.
+    const emptySources = sourceMeta.filter((m) => !m.skipped && !m.error && m.count === 0).map((m) => m.id);
 
     // Flatten + dedupe
     let all = [];
-    for (const r of resultsArrays) all = all.concat(r);
+    for (const r of resultsArrays) all = all.concat(r.events);
 
     const seen = new Set();
     const dedup = [];
@@ -1558,6 +1591,15 @@ export default async function handler(req, res) {
         geo: x.geo ? { lat: x.geo.lat, lon: x.geo.lon } : null,
       })),
       map: mapData,
+      // Additive only — existing consumers (widget.html, napaserve-event-finder.jsx)
+      // read `results` and `map` and are unaffected.
+      meta: {
+        totalBeforeDedupe: all.length,
+        totalAfterDedupe: dedup.length,
+        returned: sliced.length,
+        emptySources,
+        sources: sourceMeta,
+      },
     });
   } catch (e) {
     clearTimeout(hardTimeout);

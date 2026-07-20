@@ -80,6 +80,20 @@
     "listUrl": "https://www.visitnapavalley.com/events/"
   },
   {
+    "id": "napalife",
+    "name": "NapaLife",
+    "type": "calendar",
+    "town": "Multiple",
+    "tags": [
+      "any",
+      "music",
+      "food-wine",
+      "art",
+      "nightlife"
+    ],
+    "listUrl": "https://www.napalife.org/7603.html"
+  },
+  {
     "id": "cameo",
     "name": "Cameo Cinema",
     "type": "movies",

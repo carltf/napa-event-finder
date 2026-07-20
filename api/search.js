@@ -1,4 +1,5 @@
 import * as cheerioNS from "cheerio";
+import { parseNapaLife } from "../parseNapaLife.mjs";
 
 /**
  * Napa Valley Event Finder — API (Vercel)
@@ -83,6 +84,7 @@ const SOURCES = [
   { id: "calistoga_chamber", name: "Calistoga Chamber", type: "calendar", listUrl: "https://chamber.calistogachamber.net/events" },
   { id: "yountville_chamber", name: "Yountville Chamber", type: "calendar", listUrl: "https://web.yountvillechamber.com/events" },
   { id: "visit_napa_valley", name: "Visit Napa Valley", type: "calendar", listUrl: "https://www.visitnapavalley.com/events/" },
+  { id: "napalife", name: "NapaLife", type: "calendar", listUrl: "https://www.napalife.org/7603.html" },
   {
     id: "cameo",
     name: "Cameo Cinema",
@@ -250,6 +252,8 @@ const GEO_HINTS = {
   yountville: { lat: 38.3926, lon: -122.3631 },
   calistoga: { lat: 38.578, lon: -122.5797 },
   "american-canyon": { lat: 38.1686, lon: -122.2608 },
+  rutherford: { lat: 38.4574, lon: -122.4247 },
+  oakville: { lat: 38.4324, lon: -122.4014 },
 };
 
 // -------------------- Category classification --------------------
@@ -680,6 +684,20 @@ async function parseCameo(listUrl, f) {
     });
   }
 
+  return filterAndRank(events, f);
+}
+
+// -------------------- Parser: NapaLife weekly newsletter --------------------
+// One URL -> many events. parseNapaLife() walks the issue as a date/town state
+// machine; we re-derive geo and tag here so this file stays the single source of
+// truth for both.
+async function parseNapaLifeSource(listUrl, f) {
+  const html = await fetchText(listUrl);
+  const events = parseNapaLife(html, listUrl).map((e) => ({
+    ...e,
+    geo: GEO_HINTS[e.town] || null,
+    tag: classifyTag(e.title, e.details),
+  }));
   return filterAndRank(events, f);
 }
 
@@ -1450,6 +1468,7 @@ export default async function handler(req, res) {
         if (s.id === "donapa") return await parseDoNapa(s.listUrl, filters);
         if (s.id === "napa_library") return await parseNapaLibrary(s.listUrl, filters);
         if (s.id === "visit_napa_valley") return await parseVisitNapaValley(s.listUrl, filters);
+        if (s.id === "napalife") return await parseNapaLifeSource(s.listUrl, filters);
         if (s.id === "amcan_chamber") return await parseGrowthZone(s.listUrl, "american-canyon", filters);
         if (s.id === "calistoga_chamber") return await parseGrowthZone(s.listUrl, "calistoga", filters);
         if (s.id === "yountville_chamber") return await parseGrowthZone(s.listUrl, "yountville", filters);

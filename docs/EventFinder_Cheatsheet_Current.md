@@ -43,8 +43,31 @@
 ```json
 { "ok": true, "timeout": false, "count": 5,
   "results": [{ "header": "", "body": "", "geo": null }],
-  "map": [{ "name": "", "lat": 0, "lon": 0 }] }
+  "map": [{ "name": "", "lat": 0, "lon": 0 }],
+  "meta": {
+    "totalBeforeDedupe": 181, "totalAfterDedupe": 177, "returned": 5,
+    "emptySources": ["napa_library"],
+    "sources": [
+      { "id": "napalife", "count": 153, "ms": 1821 },
+      { "id": "cameo", "count": 0, "ms": 4, "skipped": true },
+      { "id": "amcan_chamber", "count": 0, "ms": 8004, "error": "This operation was aborted" }
+    ]
+  } }
 ```
+
+### Health check — one-liner
+
+```
+curl -s "https://napa-event-finder.vercel.app/api/search?type=any&limit=1" \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);[print(f"{s[\"id\"]:22}{s[\"count\"]:5}  {s.get(\"error\",\"\")}") for s in d["meta"]["sources"]]'
+```
+
+- `count` is **after** town/type/date filtering, **before** cross-source dedupe
+  and the `limit` slice — it answers "is this source alive?", not "what made the
+  response?"
+- `skipped: true` = deliberately not run for this query (e.g. movies filter)
+- `error` = the parser threw; `emptySources` = ran clean, produced nothing —
+  that is the silent-failure shape
 
 ## GEO_HINTS — Stable Coordinates
 

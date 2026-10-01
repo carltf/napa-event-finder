@@ -162,10 +162,50 @@ Legend: ✅ done · 🔄 in progress / known issue · ○ not started · ⏸ pau
   classifier, but the wrapper overrides it with the coarser `classifyTag` from
   `api/search.js`. Intentional (single source of truth) but produces some odd
   categories. Revisit if categories look wrong.
-- 🔺 **Silent zero-event sources are the top monitoring gap.** The 7604 encoding
-  bug proved a source can go dead while the API still returns `ok: true`. A
-  per-source count in the response meta would have caught it instantly.
+- ✅ **Per-source counts in response meta — DONE July 20, 2026.** `meta.sources[]`
+  gives `{id, count, ms}` per source plus `skipped` / `error` flags, and
+  `meta.emptySources` lists sources that ran cleanly and produced nothing.
+  Additive — `results[]` and `map[]` unchanged.
 - ○ Set up monthly check: run all parsers and verify event counts are non-zero
+  (now a one-line curl against `meta.emptySources`)
+
+### 🔺 SOURCE HEALTH AUDIT — July 20, 2026 (found immediately by the new meta)
+
+The counts revealed that **NapaLife is carrying the product**: 231 of 272 events
+(85%) in a wide-window query. Most other sources contribute little or nothing.
+
+**Dead — produce zero events even with NO date filter:**
+
+| Source | Symptom |
+|---|---|
+| `amcan_chamber` | **Always errors** — "This operation was aborted" at the 8s fetch timeout, every run |
+| `napa_library` | 0 events, ~450ms — fetches fine, parses nothing |
+| `yountville_chamber` | 0 events — GrowthZone selector likely stale |
+| `cameo_film_class` | 0 events |
+| `yountville_library` | 0 events |
+| `sthelena_library` | 0 events |
+
+**Date-blind — parse titles fine but extract NO dates, so `overlapsRange()`
+excludes them from every date-scoped query (i.e. every real query):**
+
+| Source | Undated | Effect |
+|---|---|---|
+| `calistoga_chamber` | **10/10 confirmed undated** | 10 events with no filter → 0 with any date range |
+| `napa_county_library` | 3 → 0 | same |
+| `american_canyon_city` | 10 → 0 | same |
+| `sthelena_chamber` | 15 → 1 | mostly same |
+
+This is *correct behaviour* per the "never assume today" rule — but it means
+these parsers are effectively dead in production. **Fixing date extraction in
+`parseGrowthZone()` is likely the single highest-value repair**: it would revive
+three chamber sources at once.
+
+**Healthy:** `napalife` (231), `brannan_center` (14), `town_of_yountville` (13),
+`donapa` (7), `visit_napa_valley` (4), `nvc_winery` (2).
+
+- ○ **Fix `parseGrowthZone()` date extraction** — highest value, revives 3 chambers
+- ○ **Investigate `amcan_chamber` timeout** — consistently aborts at 8s; may need a longer per-fetch timeout or the site may be blocking us
+- ○ Investigate the five zero-event parsers above (likely stale selectors)
 - ○ Add source-level error reporting to API response meta
 - ○ Create test fixtures for remaining sources (NapaLife has one)
 - ○ Unit tests for: date parsing, overlap logic, classification, dedupe, CORS
